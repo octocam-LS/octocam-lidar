@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" font-family="Arial, Helvetica, sans-serif">
+  <title>Octocam Lidar wiring (ESP32 18650 board)</title>
+  <rect width="900" height="600" fill="#232323"/>
+  <text x="450" y="34" fill="#f5f5f0" font-size="22" font-weight="900" text-anchor="middle">Octocam Lidar – wiring</text>
+  <text x="450" y="56" fill="#999" font-size="13" text-anchor="middle">ESP32 18650 board ("T-Energy S3" clone) · pin names as printed on the board</text>
+
+  <!-- ESP32 board -->
+  <rect x="40" y="90" width="250" height="470" rx="12" fill="#1b1b1b" stroke="#4682b4" stroke-width="2"/>
+  <text x="165" y="118" fill="#f5f5f0" font-size="16" font-weight="700" text-anchor="middle">ESP32 board</text>
+  <text x="165" y="136" fill="#999" font-size="11" text-anchor="middle">header pins</text>
+  <g font-size="14" fill="#f5f5f0" font-weight="700">
+    <!-- pin rows: y = 170 + 40*i -->
+    <rect x="250" y="160" width="40" height="20" rx="3" fill="#c0392b"/><text x="240" y="175" text-anchor="end">5V</text>
+    <rect x="250" y="200" width="40" height="20" rx="3" fill="#e67e22"/><text x="240" y="215" text-anchor="end">VCC (3V3)</text>
+    <rect x="250" y="240" width="40" height="20" rx="3" fill="#555"/><text x="240" y="255" text-anchor="end">GND</text>
+    <rect x="250" y="280" width="40" height="20" rx="3" fill="#2e86c1"/><text x="240" y="295" text-anchor="end">IO21 (SDA)</text>
+    <rect x="250" y="320" width="40" height="20" rx="3" fill="#8e44ad"/><text x="240" y="335" text-anchor="end">IO22 (SCL)</text>
+    <rect x="250" y="360" width="40" height="20" rx="3" fill="#27ae60"/><text x="240" y="375" text-anchor="end">IO27 (RX)</text>
+    <rect x="250" y="400" width="40" height="20" rx="3" fill="#f1c40f"/><text x="240" y="415" text-anchor="end">IO26 (TX)</text>
+    <rect x="250" y="440" width="40" height="20" rx="3" fill="#1abc9c"/><text x="240" y="455" text-anchor="end">IO32</text>
+    <rect x="250" y="480" width="40" height="20" rx="3" fill="#d35400"/><text x="240" y="495" text-anchor="end">IO35</text>
+  </g>
+  <text x="60" y="532" fill="#999" font-size="12">on the board already: BOOT button = IO0,</text>
+  <text x="60" y="548" fill="#999" font-size="12">user LED = IO16, 18650 holder + switch</text>
+
+  <!-- OLED -->
+  <rect x="560" y="80" width="300" height="110" rx="10" fill="#1b1b1b" stroke="#999"/>
+  <text x="710" y="104" fill="#f5f5f0" font-size="15" font-weight="700" text-anchor="middle">OLED 0.91" SSD1306 128x32 (I²C)</text>
+  <g font-size="13" fill="#f5f5f0">
+    <text x="575" y="130">VCC</text><text x="575" y="148">GND</text><text x="575" y="166">SDA</text><text x="575" y="184">SCL</text>
+  </g>
+
+  <!-- TF-Luna -->
+  <rect x="560" y="215" width="300" height="130" rx="10" fill="#1b1b1b" stroke="#999"/>
+  <text x="710" y="239" fill="#f5f5f0" font-size="15" font-weight="700" text-anchor="middle">TF-Luna (UART)</text>
+  <g font-size="13" fill="#f5f5f0">
+    <text x="575" y="263">pin 1  +5V</text><text x="575" y="281">pin 2  RXD</text><text x="575" y="299">pin 3  TXD</text><text x="575" y="317">pin 4  GND</text>
+    <text x="575" y="335" fill="#999">pins 5 + 6: not connected</text>
+  </g>
+
+  <!-- Optocoupler -->
+  <rect x="560" y="370" width="300" height="80" rx="10" fill="#1b1b1b" stroke="#999"/>
+  <text x="710" y="394" fill="#f5f5f0" font-size="15" font-weight="700" text-anchor="middle">Optocoupler → camera</text>
+  <g font-size="13" fill="#f5f5f0">
+    <text x="575" y="418">LED + (via its resistor, as on the triggers)</text><text x="575" y="436">LED − → GND</text>
+  </g>
+
+  <!-- Battery divider -->
+  <rect x="560" y="470" width="300" height="100" rx="10" fill="#1b1b1b" stroke="#999"/>
+  <text x="710" y="494" fill="#f5f5f0" font-size="15" font-weight="700" text-anchor="middle">Battery measurement</text>
+  <g font-size="13" fill="#f5f5f0">
+    <text x="575" y="518">cell + → 100k → IO35</text><text x="575" y="536">IO35 → 100k → GND</text>
+    <text x="575" y="556" fill="#999">(already fitted on board 3)</text>
+  </g>
+
+  <!-- wires -->
+  <g fill="none" stroke-width="3" stroke-linecap="round">
+    <!-- 3V3 -> OLED VCC -->
+    <path d="M290 210 H420 V126 H560" stroke="#e67e22"/>
+    <!-- GND -> OLED GND, Luna GND, opto GND -->
+    <path d="M290 250 H440 V144 H560" stroke="#777"/>
+    <path d="M440 250 V313 H560" stroke="#777"/>
+    <path d="M440 313 V432 H560" stroke="#777"/>
+    <!-- SDA / SCL -->
+    <path d="M290 290 H460 V162 H560" stroke="#2e86c1"/>
+    <path d="M290 330 H480 V180 H560" stroke="#8e44ad"/>
+    <!-- 5V -> Luna +5V -->
+    <path d="M290 170 H400 V259 H560" stroke="#c0392b"/>
+    <!-- IO27 <- Luna TXD, IO26 -> Luna RXD -->
+    <path d="M290 370 H500 V295 H560" stroke="#27ae60"/>
+    <path d="M290 410 H520 V277 H560" stroke="#f1c40f"/>
+    <!-- IO32 -> opto -->
+    <path d="M290 450 H530 V414 H560" stroke="#1abc9c"/>
+    <!-- IO35 -> divider -->
+    <path d="M290 490 H540 V514 H560" stroke="#d35400"/>
+  </g>
+  <text x="450" y="590" fill="#999" font-size="12" text-anchor="middle">TF-Luna TXD → IO27 and RXD ← IO26 (crossed: one device's TX goes to the other's RX)</text>
+</svg>

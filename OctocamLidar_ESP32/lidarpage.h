@@ -201,11 +201,11 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
   .forget-btn.armed { background:#c0392b; }
 
   .wrap { position:relative; }
-  .bat-badge { position:absolute; top:6px; right:16px; display:flex; align-items:center; gap:5px;
+  .bat-badge { position:absolute; top:6px; right:16px; display:flex; align-items:center; gap:6px;
     font-size:0.72rem; font-weight:700; color:var(--muted); font-variant-numeric:tabular-nums; }
-  .bat-ico { position:relative; width:22px; height:11px; border:1.5px solid currentColor; border-radius:3px;
-    box-sizing:border-box; padding:1px; }
-  .bat-ico::after { content:""; position:absolute; right:-4px; top:2.5px; width:2px; height:4px;
+  .bat-ico { position:relative; width:33px; height:16px; border:2px solid currentColor; border-radius:4px;
+    box-sizing:border-box; padding:1.5px; margin-right:4px; }
+  .bat-ico::after { content:""; position:absolute; right:-5px; top:3.5px; width:3px; height:5px;
     background:currentColor; border-radius:0 1px 1px 0; }
   .bat-fill { display:block; height:100%; width:0; border-radius:1px; background:#4cc35c; }
   .bat-badge.low { color:#e08a8a; }
@@ -220,7 +220,7 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
 </head>
 <body>
 <div class="wrap">
-  <div class="bat-badge" id="batBadge" title="battery"><span class="bat-ico"><span class="bat-fill" id="batFill"></span></span><span id="batPct">--</span></div>
+  <div class="bat-badge" id="batBadge" title="battery"><span id="batVolt"></span><span class="bat-ico"><span class="bat-fill" id="batFill"></span></span><span id="batPct">--</span></div>
   <h1>Octocam Lidar</h1>
   <div class="live" id="live">connecting...</div>
 
@@ -831,7 +831,7 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
   const liveEl = $('live'), distBig = $('distBig'), distState = $('distState'), rulerCard = $('rulerCard');
   let lastLiveOk = 0;
   function renderLive() {
-    if (!live.ok) { distBig.textContent = '---'; distState.textContent = 'NO SENSOR DATA -- CHECK TF-LUNA TX -> D7'; distState.className = 'state'; }
+    if (!live.ok) { distBig.textContent = '---'; distState.textContent = 'NO SENSOR DATA -- CHECK TF-LUNA TX -> IO27'; distState.className = 'state'; }
     else if (!live.v) { distBig.textContent = '---'; distState.textContent = 'NO TARGET'; distState.className = 'state'; }
     else {
       distBig.textContent = live.d;
@@ -919,16 +919,18 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
   const timerBtn = $('timerToggleBtn'), timerInput = $('timerValue');
   const timerDownBtn = $('timerDown'), timerUpBtn = $('timerUp'), timerNote = $('timerNote');
 
-  let intervalMsVal = 1000, intervalOn = false, intervalForced = false;
+  let intervalMsVal = 2000, intervalOn = true, intervalForced = false, inRange = false;
   let timerStaged = 5, startDelayStaged = 5, timerRunning = false, startDelayRunning = false;
   let intervalPanelOpen = false, intervalPollStarted = false, lastIntervalCounter = null, intervalPushT = null;
 
   function renderInterval() {
     intervalBtn.classList.toggle('off', !intervalOn);
     intervalBtn.classList.toggle('forced', intervalForced);
+    intervalBtn.textContent = !intervalOn ? 'Interval' : intervalForced ? 'Interval: Forced'
+      : inRange ? 'Interval: Shooting' : 'Interval: Stand-by';
     intervalNote.textContent = intervalForced
       ? 'FORCED: fires all the time, with or without an object in range. Hold the Interval button to switch this off.'
-      : 'Not saved, 1000 ms after power-on. Repeats the trigger while an object stays in the range. Hold the Interval button 0.7s to force it to run all the time. Tap Interval to switch it on or off.';
+      : 'On after power-on with 2000 ms (not saved). Stand-by until something is inside the range, then repeats the trigger while it stays there. Hold the Interval button 0.7s to force it to run all the time. Tap Interval to switch it on or off.';
   }
   function setTimerUI(running) {
     timerRunning = running;
@@ -950,7 +952,7 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
   }
   function applyIntervalConfig(data) {
     intervalMsVal = data.interval; showMs(intervalInput, intervalMsVal);
-    intervalOn = !!data.intervalEnabled; intervalForced = !!data.intervalForced;
+    intervalOn = !!data.intervalEnabled; intervalForced = !!data.intervalForced; inRange = !!data.present;
     renderInterval();
     setTimerUI(!!data.timerActive);
     if (data.timerActive) timerInput.value = formatMMSS(data.timerRemainingSeconds);
@@ -965,7 +967,7 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
         setTimeout(() => intervalBtn.classList.remove('pulse'), 150);
       }
       lastIntervalCounter = data.counter;
-      intervalOn = data.enabled; intervalForced = data.forced;
+      intervalOn = data.enabled; intervalForced = data.forced; inRange = !!data.present;
       renderInterval();
       if (data.timerActive) {
         timerRunning = true; timerBtn.classList.add('on-state');
@@ -1327,6 +1329,7 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
     const b = $('batBadge');
     const ok = d.bs === 'ok';
     $('batPct').textContent = ok ? d.bp + ' %' : (d.bs === 'usb' ? 'USB' : '--');
+    $('batVolt').textContent = ok ? d.bv.toFixed(2) + ' V' : '';
     $('batFill').style.width = (ok ? d.bp : 0) + '%';
     b.classList.toggle('low', ok && d.bp <= 15);
     b.classList.toggle('mid', ok && d.bp > 15 && d.bp <= 40);

@@ -26,6 +26,14 @@
     OLED 0.91" SSD1306 128x32 I2C:  VCC -> 3V3 (VCC pin), GND -> GND, SDA -> IO21, SCL -> IO22
     Optocoupler input (via its resistor, as on the triggers) -> IO32, HIGH = shutter closed
     Battery: cell + -> 100k -> IO35 -> 100k -> GND (the clone has no battery sense of its own)
+    RGB LED (one WS2812, as on the LS RGB sender): DIN -> IO25, VCC -> 3V3, GND -> GND
+      battery colour at 30 %: green > 85 %, yellow > 50 %, orange > 25 %, red below, red flashing < 5 %;
+      white 250 ms at full brightness on every signal sent (trigger, interval, TEST);
+      blue blinking during the 8 s sender-pairing window. Dark when there is no battery reading.
+    Battery: 3.10 V = 0 %, 4.20 V = 100 %. Below 3.10 V for 10 s: the RGB LED blinks red very fast
+      for 5 s, then the ESP32 goes into deep sleep (opto off, WiFi off). It wakes every 60 s, measures
+      and sleeps again until the cell is back above 3.30 V (charger) or the power switch is cycled.
+      The TF-Luna stays powered from the 5V pin in deep sleep: switch the unit off to stop the drain.
     User LED IO16 (on the board): short blink at power-on, flashes when the battery is low
     BOOT button (IO0, on the board) = "button 1", same tiers as the ESP8266 ToF / trigger,
       decided on RELEASE; while held the OLED shows what a release would do:
@@ -84,9 +92,10 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
+#include <esp_sleep.h>
 
 // ---------- USER-CONFIGURABLE SETTINGS ----------
-#define FIRMWARE_VERSION      "1.0.0-lidar32"   // must match firmware/version.txt for a release
+#define FIRMWARE_VERSION      "1.2.0-lidar32"   // must match firmware/version.txt for a release
 
 #define PRODUCT_SIGNATURE_0   0x8F              // must match all Octocam devices
 #define PRODUCT_SIGNATURE_1   0x3C
@@ -129,8 +138,24 @@
 #define LOW_BAT_PCT           15      // LED flash every 4 s at or below this ...
 #define LOW_BAT_CLEAR_PCT     20      // ... until the cell is back above this
 #define CRIT_BAT_PCT          5       // flash every 1 s at or below this
+#define BAT_EMPTY_V           3.10f   // = 0 %; below this the ESP32 goes into deep sleep
+#define BAT_EMPTY_HOLD_MS     10000UL // must stay below BAT_EMPTY_V this long (load dips don't count)
+#define BAT_SLEEP_WARN_MS     5000UL  // very fast red blink this long before deep sleep
+#define BAT_SLEEP_BLINK_MS    60      // on / off time of that blink
+#define BAT_SLEEP_CHECK_S     60      // deep sleep wakes this often to measure the cell
+#define BAT_WAKE_V            3.30f   // after a battery sleep: stay awake only above this (cell recovers when resting)
 #define LED_BOOT_BLINK_MS     150
 #define LED_FLASH_MS          80
+
+// ----- RGB status LED (WS2812 on IO25, driven with the core's neopixelWrite) -----
+#define RGB_PIN               25
+#define RGB_DIM               77      // 30 % of 255: battery colours and the pairing blink
+#define RGB_FLASH_MS          250     // white at full brightness on every signal sent
+#define RGB_BLINK_MS          500     // on / off time of the critical-battery and pairing blinks
+#define BAT_GREEN_PCT         85      // colour thresholds: green above, yellow above 50, orange above 25,
+#define BAT_YELLOW_PCT        50      // red below, red flashing below CRIT_BAT_PCT
+#define BAT_ORANGE_PCT        25
+#define BAT_COLOR_HYST        2       // a colour only changes once the % is this far past the threshold
 
 // ----- TF-Luna -----
 #define LUNA_BAUD             115200
@@ -182,7 +207,7 @@
 #define MAX_TRIGGER_DELAY_MS  10000
 
 // ----- interval (RAM only, never saved) -----
-#define DEFAULT_INTERVAL_MS   1000
+#define DEFAULT_INTERVAL_MS   2000
 #define MIN_INTERVAL_MS       300
 #define MAX_INTERVAL_MS       10000
 #define MAX_TIMER_MINUTES     10000UL
@@ -297,8 +322,9 @@ uint16_t extraGapMs = DEFAULT_EXTRA_GAP_MS;
 bool extraShotsEnabled = false;                                         // RAM only
 uint16_t triggerDelayMs = DEFAULT_TRIGGER_DELAY_MS;
 
-// Interval + Timer + Delayed Start: RAM only, all off after power-up
-bool intervalEnabled = false;
+// Interval + Timer + Delayed Start: RAM only. Interval ON after power-up (normal mode:
+// repeats only while something is inside the range); Timer and Delayed Start off.
+bool intervalEnabled = true;
 bool intervalForced = false;
 unsigned long intervalMs = DEFAULT_INTERVAL_MS;
 unsigned long lastIntervalTime = 0;
@@ -410,6 +436,10 @@ uint32_t batPinMv = 0;
 float batVolts = 0;
 bool batHaveValue = false;
 bool lowBattery = false;
+unsigned long batEmptySinceMs = 0;    // 0 = not below BAT_EMPTY_V
+unsigned long batSleepWarnStartMs = 0; // 0 = no deep-sleep warning running
+unsigned long rgbFlashUntil = 0;
+uint8_t batColorLevel = 255;          // 0 green, 1 yellow, 2 orange, 3 red, 4 red flashing; 255 = not set yet
 unsigned long lastBatMs = 0, ledCycleStartMs = 0;
 uint8_t factoryStaMac[6];
 
@@ -891,6 +921,7 @@ void fireSignal(uint8_t type) {
     recordInto(minuteCountsContact);
   }
   flashTriggerFrame();
+  rgbFlashUntil = millis() + RGB_FLASH_MS;
 }
 
 // =====================================================================
@@ -1280,9 +1311,10 @@ void checkIntervalTimers() {
 // =====================================================================
 // Battery (IO35, 100k/100k) + low-battery LED (IO16)
 // =====================================================================
-// Resting Li-ion voltage -> charge %. Under load it reads a bit low, on the charger a bit high.
-const float LIION_V[] = { 3.27f, 3.61f, 3.69f, 3.71f, 3.73f, 3.75f, 3.77f, 3.79f, 3.80f, 3.82f, 3.84f,
-                          3.85f, 3.87f, 3.91f, 3.95f, 3.98f, 4.02f, 4.08f, 4.11f, 4.15f, 4.20f };
+// Resting Li-ion voltage -> charge %, in 10 % steps. 3.10 V counts as empty (safety margin above
+// the usual 3.0 V), so 0-20 % is stretched over 3.10-3.25 V. Under load it reads a bit low,
+// on the charger a bit high.
+const float LIION_V[] = { 3.10f, 3.18f, 3.25f, 3.45f, 3.58f, 3.67f, 3.72f, 3.80f, 3.90f, 4.05f, 4.20f };
 const uint8_t LIION_N = sizeof(LIION_V) / sizeof(LIION_V[0]);
 
 int batteryPercent() {
@@ -1292,7 +1324,7 @@ int batteryPercent() {
   for (uint8_t i = 1; i < LIION_N; i++) {
     if (v < LIION_V[i]) {
       float f = (v - LIION_V[i - 1]) / (LIION_V[i] - LIION_V[i - 1]);
-      return (int)((i - 1) * 5 + f * 5 + 0.5f);
+      return (int)((i - 1) * 10 + f * 10 + 0.5f);
     }
   }
   return 100;
@@ -1335,6 +1367,101 @@ void updateBattery() {
   unsigned long period = pct <= CRIT_BAT_PCT ? 1000UL : 4000UL;
   if (now - ledCycleStartMs >= period) ledCycleStartMs = now;
   ledWrite(now - ledCycleStartMs < LED_FLASH_MS);
+}
+
+// ---------------- empty cell -> deep sleep ----------------
+void rgbWrite(uint8_t red, uint8_t green, uint8_t blue);
+
+void enterBatterySleep(bool displayStarted) {
+  setOpto(false);
+  rgbWrite(0, 0, 0);
+  ledWrite(false);
+  if (displayStarted) u8g2.setPowerSave(1);
+  esp_now_deinit();
+  WiFi.mode(WIFI_OFF);
+  esp_sleep_enable_timer_wakeup((uint64_t)BAT_SLEEP_CHECK_S * 1000000ULL);
+  esp_deep_sleep_start();                     // wakes as a fresh boot; setup() decides again
+}
+
+// Called at power-on / wake-up, before WiFi: a cell that is still empty goes straight back to sleep.
+void checkBatteryAtBoot() {
+  bool timerWake = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER;
+  bool ok = batVolts >= BAT_NONE_BELOW_V && batVolts <= BAT_USB_ABOVE_V;
+  if (!ok) return;                            // no reading or on USB: never sleep
+  if (timerWake && batVolts < BAT_WAKE_V) enterBatterySleep(false);   // silently, no blink every minute
+  if (!timerWake && batVolts < BAT_EMPTY_V) {
+    unsigned long start = millis();
+    while (millis() - start < BAT_SLEEP_WARN_MS) {
+      rgbWrite(((millis() - start) / BAT_SLEEP_BLINK_MS) % 2 == 0 ? 255 : 0, 0, 0);
+      delay(5);
+    }
+    enterBatterySleep(false);
+  }
+}
+
+// Running: below BAT_EMPTY_V for BAT_EMPTY_HOLD_MS -> warning blink (updateRgb) -> deep sleep.
+void checkBatteryEmpty() {
+  unsigned long now = millis();
+  if (!batteryOk() || batVolts >= BAT_EMPTY_V) {
+    batEmptySinceMs = 0;
+    batSleepWarnStartMs = 0;                  // cell recovered (or charger): warning off
+    return;
+  }
+  if (batEmptySinceMs == 0) batEmptySinceMs = now;
+  if (batSleepWarnStartMs == 0) {
+    if (now - batEmptySinceMs >= BAT_EMPTY_HOLD_MS) batSleepWarnStartMs = now;
+    return;
+  }
+  if (now - batSleepWarnStartMs >= BAT_SLEEP_WARN_MS) enterBatterySleep(true);
+}
+
+// ---------------- RGB status LED ----------------
+// neopixelWrite takes (red, green, blue). If red and green come out swapped, swap them here.
+void rgbWrite(uint8_t red, uint8_t green, uint8_t blue) {
+  static uint32_t last = 0xFFFFFFFF;
+  uint32_t c = ((uint32_t)red << 16) | ((uint32_t)green << 8) | blue;
+  if (c == last) return;               // only write on a change
+  last = c;
+  neopixelWrite(RGB_PIN, red, green, blue);
+}
+
+// Battery % -> colour level, with a little hysteresis so the colour doesn't flicker at a threshold.
+uint8_t levelForPct(int pct, int margin) {
+  if (pct > BAT_GREEN_PCT + margin) return 0;
+  if (pct > BAT_YELLOW_PCT + margin) return 1;
+  if (pct > BAT_ORANGE_PCT + margin) return 2;
+  if (pct >= CRIT_BAT_PCT + margin) return 3;
+  return 4;
+}
+void updateBatColorLevel() {
+  int pct = batteryPercent();
+  uint8_t up = levelForPct(pct, BAT_COLOR_HYST);    // must be clearly above a threshold to get better
+  uint8_t down = levelForPct(pct, -BAT_COLOR_HYST); // and clearly below one to get worse
+  if (batColorLevel == 255) batColorLevel = levelForPct(pct, 0);
+  else if (up < batColorLevel) batColorLevel = up;
+  else if (down > batColorLevel) batColorLevel = down;
+}
+
+// The only place that sets the RGB LED (besides checkBatteryAtBoot). Priority: deep-sleep warning,
+// white signal flash, blue pairing blink, battery colour.
+void updateRgb() {
+  unsigned long now = millis();
+  if (batSleepWarnStartMs) {                  // going to deep sleep: very fast red blink, full brightness
+    rgbWrite(((now - batSleepWarnStartMs) / BAT_SLEEP_BLINK_MS) % 2 == 0 ? 255 : 0, 0, 0);
+    return;
+  }
+  if ((long)(rgbFlashUntil - now) > 0) { rgbWrite(255, 255, 255); return; }
+  bool blinkOn = (now / RGB_BLINK_MS) % 2 == 0;
+  if (senderPairWindow) { rgbWrite(0, 0, blinkOn ? RGB_DIM : 0); return; }   // like the remote: not during the power-on hello
+  if (!batteryOk()) { rgbWrite(0, 0, 0); batColorLevel = 255; return; }
+  updateBatColorLevel();
+  switch (batColorLevel) {
+    case 0:  rgbWrite(0, RGB_DIM, 0); break;                       // green
+    case 1:  rgbWrite(RGB_DIM, RGB_DIM * 3 / 4, 0); break;         // yellow (the green die is stronger)
+    case 2:  rgbWrite(RGB_DIM, RGB_DIM / 4, 0); break;             // orange
+    case 3:  rgbWrite(RGB_DIM, 0, 0); break;                       // red
+    default: rgbWrite(blinkOn ? RGB_DIM : 0, 0, 0); break;         // red flashing
+  }
 }
 
 // =====================================================================
@@ -1521,6 +1648,7 @@ String configJson() {
   j += ",\"interval\":" + String(intervalMs);
   j += ",\"intervalEnabled\":" + String(intervalEnabled ? "true" : "false");
   j += ",\"intervalForced\":" + String(intervalForced ? "true" : "false");
+  j += ",\"present\":" + String(objectPresent ? "true" : "false");
   j += ",\"timerActive\":" + String(timerArmed() ? "true" : "false");
   j += ",\"timerRemainingSeconds\":" + String(timerSec >= 0 ? timerSec : 0);
   j += ",\"startDelayActive\":" + String(startDelayActive ? "true" : "false");
@@ -1729,6 +1857,7 @@ void handleIntervalStatus() {
   String json = "{\"counter\":" + String(intervalSendCounter) +
                 ",\"enabled\":" + (intervalEnabled ? "true" : "false") +
                 ",\"forced\":" + (intervalForced ? "true" : "false") +
+                ",\"present\":" + (objectPresent ? "true" : "false") +
                 ",\"timerActive\":" + (timerArmed() ? "true" : "false") +
                 ",\"timerRemainingSeconds\":" + String(timerSec >= 0 ? timerSec : 0) +
                 ",\"startDelayActive\":" + (startDelayActive ? "true" : "false") +
@@ -1879,9 +2008,10 @@ void handleResetDefaults() {
   extraGapMs = DEFAULT_EXTRA_GAP_MS;
   settingsDirty = true;
 
-  intervalEnabled = false;
+  intervalEnabled = true;
   intervalForced = false;
   intervalMs = DEFAULT_INTERVAL_MS;
+  lastIntervalTime = millis();
   timerActive = false;
   timerPendingSeconds = 0;
   startDelayActive = false;
@@ -2158,6 +2288,7 @@ void setup() {
   pinMode(OPTO_PIN, OUTPUT);
   setOpto(false);
   pinMode(WAKE_BUTTON_PIN, INPUT_PULLUP);
+  rgbWrite(0, 0, 0);
   pinMode(LED_PIN, OUTPUT);
   ledWrite(true);                            // power-on blink
   Serial.begin(115200);                      // USB: debug only
@@ -2169,6 +2300,7 @@ void setup() {
   analogReadResolution(12);
   analogSetPinAttenuation(BAT_PIN, ADC_11db);
   measureBattery();
+  checkBatteryAtBoot();                      // empty cell: back to deep sleep before WiFi starts
   delay(LED_BOOT_BLINK_MS);
   ledWrite(false);
 
@@ -2275,6 +2407,8 @@ void loop() {
   processPendingPairAcks();
   checkWakeButton();
   updateBattery();
+  checkBatteryEmpty();
+  updateRgb();
 
   if (apActive) {
     dnsServer.processNextRequest();

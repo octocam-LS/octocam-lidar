@@ -1,11 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" font-family="Arial, Helvetica, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 700" font-family="Arial, Helvetica, sans-serif">
   <title>Octocam Lidar wiring (ESP32 18650 board)</title>
-  <rect width="900" height="600" fill="#232323"/>
+  <rect width="900" height="700" fill="#232323"/>
   <text x="450" y="34" fill="#f5f5f0" font-size="22" font-weight="900" text-anchor="middle">Octocam Lidar – wiring</text>
   <text x="450" y="56" fill="#999" font-size="13" text-anchor="middle">ESP32 18650 board ("T-Energy S3" clone) · pin names as printed on the board</text>
 
   <!-- ESP32 board -->
-  <rect x="40" y="90" width="250" height="470" rx="12" fill="#1b1b1b" stroke="#4682b4" stroke-width="2"/>
+  <rect x="40" y="90" width="250" height="560" rx="12" fill="#1b1b1b" stroke="#4682b4" stroke-width="2"/>
   <text x="165" y="118" fill="#f5f5f0" font-size="16" font-weight="700" text-anchor="middle">ESP32 board</text>
   <text x="165" y="136" fill="#999" font-size="11" text-anchor="middle">header pins</text>
   <g font-size="14" fill="#f5f5f0" font-weight="700">
@@ -19,9 +19,10 @@
     <rect x="250" y="400" width="40" height="20" rx="3" fill="#f1c40f"/><text x="240" y="415" text-anchor="end">IO26 (TX)</text>
     <rect x="250" y="440" width="40" height="20" rx="3" fill="#1abc9c"/><text x="240" y="455" text-anchor="end">IO32</text>
     <rect x="250" y="480" width="40" height="20" rx="3" fill="#d35400"/><text x="240" y="495" text-anchor="end">IO35</text>
+    <rect x="250" y="520" width="40" height="20" rx="3" fill="#ff5fa2"/><text x="240" y="535" text-anchor="end">IO25</text>
   </g>
-  <text x="60" y="532" fill="#999" font-size="12">on the board already: BOOT button = IO0,</text>
-  <text x="60" y="548" fill="#999" font-size="12">user LED = IO16, 18650 holder + switch</text>
+  <text x="60" y="622" fill="#999" font-size="12">on the board already: BOOT button = IO0,</text>
+  <text x="60" y="638" fill="#999" font-size="12">user LED = IO16, 18650 holder + switch</text>
 
   <!-- OLED -->
   <rect x="560" y="80" width="300" height="110" rx="10" fill="#1b1b1b" stroke="#999"/>
@@ -53,6 +54,13 @@
     <text x="575" y="556" fill="#999">(already fitted on board 3)</text>
   </g>
 
+  <!-- RGB LED -->
+  <rect x="560" y="590" width="300" height="80" rx="10" fill="#1b1b1b" stroke="#999"/>
+  <text x="710" y="614" fill="#f5f5f0" font-size="15" font-weight="700" text-anchor="middle">RGB LED (WS2812)</text>
+  <g font-size="13" fill="#f5f5f0">
+    <text x="575" y="638">DIN → IO25</text><text x="575" y="656">VCC → VCC (3V3), GND → GND</text>
+  </g>
+
   <!-- wires -->
   <g fill="none" stroke-width="3" stroke-linecap="round">
     <!-- 3V3 -> OLED VCC -->
@@ -73,6 +81,8 @@
     <path d="M290 450 H530 V414 H560" stroke="#1abc9c"/>
     <!-- IO35 -> divider -->
     <path d="M290 490 H540 V514 H560" stroke="#d35400"/>
+    <!-- IO25 -> RGB DIN -->
+    <path d="M290 530 H550 V634 H560" stroke="#ff5fa2"/>
   </g>
-  <text x="450" y="590" fill="#999" font-size="12" text-anchor="middle">TF-Luna TXD → IO27 and RXD ← IO26 (crossed: one device's TX goes to the other's RX)</text>
+  <text x="450" y="690" fill="#999" font-size="12" text-anchor="middle">TF-Luna TXD → IO27 and RXD ← IO26 (crossed: one device's TX goes to the other's RX)</text>
 </svg>

@@ -39,6 +39,10 @@
       decided on RELEASE; while held the OLED shows what a release would do:
         < 1 s     : switch Movement <-> Light-Barrier
         1 - 2.5 s : web app on (or a fresh idle time for a running one)
+    WiFi wake: someone STANDING STILL inside the range for 8 s turns the web app on (when it is off).
+      "Still" = the smoothed distance stays within 20 cm the whole time, with no gap over 0.3 s, so
+      passing bikes or a crowd (distance keeps changing) don't wake it. Wakes once per stay: the
+      subject must leave the range (or move) before it can wake the app again.
         2.5 - 5 s : extra triggers on / off
         5 - 10 s  : PAIRING: 8 s Listen-for-Sender window + 10 s pairing beacon for triggers
         10 - 20 s : CLEAR all pairings (senders and triggers)
@@ -95,7 +99,7 @@
 #include <esp_sleep.h>
 
 // ---------- USER-CONFIGURABLE SETTINGS ----------
-#define FIRMWARE_VERSION      "1.2.0-lidar32"   // must match firmware/version.txt for a release
+#define FIRMWARE_VERSION      "1.2.1-lidar32"   // must match firmware/version.txt for a release
 
 #define PRODUCT_SIGNATURE_0   0x8F              // must match all Octocam devices
 #define PRODUCT_SIGNATURE_1   0x3C
@@ -173,6 +177,11 @@
 #define MIN_FILTER            1
 #define MAX_FILTER            8       // slider range 1-8
 #define REARM_MS              300     // object must be out of range this long before it can trigger again
+// ----- WiFi wake by a subject standing still in the range -----
+#define STILL_WAKE_MS         8000UL  // in range and still this long -> web app on
+#define STILL_SPAN_CM         20      // smoothed distance must stay within this band
+#define STILL_GAP_MS          300UL   // out-of-range / no-reading gaps up to this long are tolerated
+#define STILL_EMA_ALPHA       0.1f    // distance smoothing (TF-Luna noise is a few cm per reading)
 
 // ----- trigger mode (saved) -----
 #define MODE_MOVEMENT         0
@@ -351,6 +360,10 @@ uint32_t frameCount = 0;
 uint32_t readingsPerSec = 0;
 
 bool objectPresent = false;        // object in range and already triggered
+bool stillActive = false;          // a still-standing streak is running
+bool stillLatched = false;         // woke the app for this stay; needs a break before the next wake
+unsigned long stillStartMs = 0, stillLastInMs = 0;
+float stillEma = 0, stillLo = 0, stillHi = 0;
 uint8_t inRangeStreak = 0;         // Light-Barrier mode
 unsigned long lastInRangeMs = 0;
 
@@ -1010,6 +1023,41 @@ void processReading(uint16_t dist, uint16_t amp, uint16_t rawTemp) {
 
   if (triggerMode == MODE_MOVEMENT) processMovement(dist, lunaValid, now);
   else processBarrier(dist, lunaValid, now);
+  checkStillWake(dist, lunaValid, now);
+}
+
+// WiFi wake: a subject in the range whose (smoothed) distance stays inside a STILL_SPAN_CM band
+// for STILL_WAKE_MS. A stream of bikes or people can look like a wall to the range, but its
+// distance keeps jumping, which restarts the streak. Works in both modes.
+void restartStill(float d, unsigned long now) {
+  stillActive = true;
+  stillStartMs = now;
+  stillEma = stillLo = stillHi = d;
+}
+
+void checkStillWake(uint16_t dist, bool valid, unsigned long now) {
+  bool inRange = valid && dist >= minCm && dist <= maxCm;
+  if (!inRange) {
+    if (stillActive && now - stillLastInMs > STILL_GAP_MS) { stillActive = false; stillLatched = false; }
+    return;
+  }
+  stillLastInMs = now;
+  if (!stillActive) { restartStill(dist, now); return; }
+  stillEma += STILL_EMA_ALPHA * ((float)dist - stillEma);
+  if (stillEma < stillLo) stillLo = stillEma;
+  if (stillEma > stillHi) stillHi = stillEma;
+  if (stillHi - stillLo > STILL_SPAN_CM) {   // moved: start over from here
+    restartStill(stillEma, now);
+    stillLatched = false;
+    return;
+  }
+  if (!stillLatched && now - stillStartMs >= STILL_WAKE_MS) {
+    stillLatched = true;
+    if (!apActive) {
+      startWebApp();
+      showButtonMessage("Web App", "on");
+    }
+  }
 }
 
 // LIGHT-BARRIER: anything inside the range for filterCount readings in a row
@@ -1091,6 +1139,7 @@ void processMovement(uint16_t d, bool valid, unsigned long now) {
 void resetDetection() {
   objectPresent = false;
   inRangeStreak = 0;
+  stillActive = false;
   moveArmed = true;
   trackActive = false;
   medCount = 0;

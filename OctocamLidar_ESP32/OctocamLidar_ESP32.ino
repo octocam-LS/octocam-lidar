@@ -1,7 +1,8 @@
 /*
   Octocam Lidar -- ESP-NOW Camera Trigger Sender with a TF-Luna distance sensor (ESP32)
-  The ESP32 successor of the Octocam ToF (OctocamToF_8266); same detection, radio, pairing
-  and web app, plus the battery, home-WiFi firmware updates and a 0.91" OLED.
+  The ESP32 successor of the Octocam ToF (OctocamToF_8266), used like the Octocam LS senders:
+  it only SENDS to paired Octocam triggers (no camera cord of its own, no receiving from other
+  senders). Battery, home-WiFi firmware updates and a 0.91" OLED (test units only).
 
   Board: "T-Energy S3" clone that is really a classic ESP32 (ESP32-D0WD-V3, CP2102 USB, 18650 holder).
   Arduino: "ESP32 Dev Module", Flash Mode DIO, Flash Frequency 40 MHz (the clone's flash doesn't
@@ -24,14 +25,14 @@
     TF-Luna pin 5/6     -> not connected (open = UART mode)
 
     OLED 0.91" SSD1306 128x32 I2C:  VCC -> 3V3 (VCC pin), GND -> GND, SDA -> IO21, SCL -> IO22
-    Optocoupler input (via its resistor, as on the triggers) -> IO32, HIGH = shutter closed
     Battery: cell + -> 100k -> IO35 -> 100k -> GND (the clone has no battery sense of its own)
     RGB LED (one WS2812, as on the LS RGB sender): DIN -> IO25, VCC -> 3V3, GND -> GND
       battery colour at 30 %: green > 85 %, yellow > 50 %, orange > 25 %, red below, red flashing < 5 %;
       white 250 ms at full brightness on every signal sent (trigger, interval, TEST);
-      blue blinking during the 8 s sender-pairing window. Dark when there is no battery reading.
+      blue blinking while the pairing signal runs after BOOT 5-10 s / "Pairing Signal" (not the
+      one after power-on). Dark when there is no battery reading.
     Battery: 3.10 V = 0 %, 4.20 V = 100 %. Below 3.10 V for 10 s: the RGB LED blinks red very fast
-      for 5 s, then the ESP32 goes into deep sleep (opto off, WiFi off). It wakes every 60 s, measures
+      for 5 s, then the ESP32 goes into deep sleep (LEDs off, WiFi off). It wakes every 60 s, measures
       and sleeps again until the cell is back above 3.30 V (charger) or the power switch is cycled.
       The TF-Luna stays powered from the 5V pin in deep sleep: switch the unit off to stop the drain.
     User LED IO16 (on the board): short blink at power-on, flashes when the battery is low
@@ -43,9 +44,9 @@
       "Still" = the smoothed distance stays within 20 cm the whole time, with no gap over 0.3 s, so
       passing bikes or a crowd (distance keeps changing) don't wake it. Wakes once per stay: the
       subject must leave the range (or move) before it can wake the app again.
-        2.5 - 5 s : extra triggers on / off
-        5 - 10 s  : PAIRING: 8 s Listen-for-Sender window + 10 s pairing beacon for triggers
-        10 - 20 s : CLEAR all pairings (senders and triggers)
+        2.5 - 5 s : nothing (release here to cancel)
+        5 - 10 s  : PAIRING: 10 s pairing signal for triggers
+        10 - 20 s : CLEAR all paired triggers
         20 s +    : RESET the WiFi password to the default (88888888)
 
   ---------------------------------------------------------------------------
@@ -54,9 +55,9 @@
   MOVEMENT (default): only something coming TOWARDS the sensor triggers -- inside the range
     and at least "Sideways Movement Threshold" cm (20-100, default 60) closer than the farthest
     point it was seen at. LIGHT-BARRIER: anything inside the range for "Movement Filter"
-    readings in a row. On a trigger: the camera on IO32 fires (duration / extras / delay set
-    here) and a TRIGGER goes to every paired trigger that is on. Receiver mode: paired LS
-    senders fire the local camera. Interval / Delayed Start / Timer as on the ESP8266 ToF.
+    readings in a row. On a trigger a TRIGGER goes to every paired trigger that is on; each
+    trigger uses its own duration / extras / delay. Interval (on after power-on, 2000 ms, only
+    while something is in range) / Delayed Start / Timer as on the ESP8266 ToF.
   Radio: channel 11, signature 8F 3C D1 62, same packets and pairing as all Octocam devices.
   The station runs 802.11b/g/n + Long Range, so it hears both ESP32 (LR) and ESP8266 senders.
 
@@ -64,8 +65,10 @@
   WEB APP + FIRMWARE UPDATE
   ---------------------------------------------------------------------------
   WiFi "OctocamLidar<number>" -> http://8.8.8.8 (sign-in popup). Open for the first 10 s
-  after power-on, then password (default 88888888). Off 2 min after the last phone left
-  (unless Keep App Alive); BOOT 1-2.5 s brings it back. Battery % top right of the page.
+  after power-on, then password (default 88888888). On for the first 5 min after power-on and
+  off 5 min after the last phone left, unless Keep App Alive (saved with Save Settings);
+  BOOT 1-2.5 s or standing still in the range brings it back. Battery top right of the page,
+  TF-Luna chip temperature top left.
   "Update Firmware": the Lidar leaves its own network, joins the home WiFi saved in the app
   (name default "birdbox"; the password is entered in the app and stored only on the device,
   never in this sketch), reads firmware/version.txt from the GitHub repo and, if it differs
@@ -75,10 +78,10 @@
   ---------------------------------------------------------------------------
   OLED (0.91" 128x32)
   ---------------------------------------------------------------------------
-    top line : trigger duration ("Pairing" while the window is open) | battery % | mode
+    top line : interval ("Pairing" while the pairing signal runs) | battery % | mode
     middle   : live distance in cm ("---" = no valid reading)
     bottom   : distance meter 0-8 m: trigger range as a bar, live distance as a marker
-    frame    : flashes on every signal sent and every camera release
+    frame    : flashes on every signal sent
 
   SAVING: changes take effect at once, "Save Settings" stores them (password, network name,
   home WiFi and pairings are stored right away).
@@ -99,7 +102,7 @@
 #include <esp_sleep.h>
 
 // ---------- USER-CONFIGURABLE SETTINGS ----------
-#define FIRMWARE_VERSION      "1.2.1-lidar32"   // must match firmware/version.txt for a release
+#define FIRMWARE_VERSION      "1.3.0-lidar32"   // must match firmware/version.txt for a release
 
 #define PRODUCT_SIGNATURE_0   0x8F              // must match all Octocam devices
 #define PRODUCT_SIGNATURE_1   0x3C
@@ -114,15 +117,12 @@
 #define PACKET_LEN            7
 
 #define MAX_PAIRED_RECEIVERS  16
-#define MAX_PAIRED_SENDERS    8       // LS senders this device listens to (receiver mode)
-#define SENDER_PAIR_WINDOW_MS 8000UL  // "Listen for Sender" window
+#define MAX_PAIRED_SENDERS    8       // only for the saved-settings layout (receiver mode removed in 1.3)
 #define PAIR_ACK_COPIES       3
 #define PAIR_ACK_GAP_MS       30
 #define WIFI_CHANNEL          11
 
 // ----- pins -----
-#define OPTO_PIN              32      // -> optocoupler -> camera
-#define OPTO_ACTIVE_HIGH      true
 #define LUNA_RX_PIN           27      // <- TF-Luna TXD (UART2)
 #define LUNA_TX_PIN           26      // -> TF-Luna RXD
 #define WAKE_BUTTON_PIN       0       // the BOOT button on the board
@@ -197,23 +197,10 @@
 // BOOT button tiers (upper bounds, same as the trigger's button 1)
 #define SHORT_PRESS_UPPER_MS    1000UL  // < this: switch Movement / Light-Barrier
 #define WEBAPP_PRESS_UPPER_MS   2500UL  // < this: web app on
-#define MEDIUM_PRESS_UPPER_MS   5000UL  // < this: extra triggers on / off
+#define MEDIUM_PRESS_UPPER_MS   5000UL  // < this: nothing (cancel)
 #define PAIRING_PRESS_UPPER_MS 10000UL  // < this: pairing
 #define CLEAR_PAIR_UPPER_MS    20000UL  // < this: clear all pairings; longer: reset password
 #define BUTTON_MSG_MS           1500UL  // result message on the OLED
-
-// ----- local camera output -----
-#define LEGACY_DURATIONS      5       // old preset slots, still in the saved-settings layout
-#define DEFAULT_TRIGGER_DURATION_MS 250
-#define MIN_DURATION_MS       10
-#define MAX_DURATION_MS       10000
-#define DEFAULT_EXTRA_SHOTS_COUNT 1
-#define MAX_EXTRA_SHOTS_TYPED 200
-#define DEFAULT_EXTRA_GAP_MS  50
-#define MIN_EXTRA_GAP_MS      10
-#define MAX_EXTRA_GAP_MS      10000
-#define DEFAULT_TRIGGER_DELAY_MS 0
-#define MAX_TRIGGER_DELAY_MS  10000
 
 // ----- interval (RAM only, never saved) -----
 #define DEFAULT_INTERVAL_MS   2000
@@ -237,12 +224,12 @@
 // ----- web app -----
 #define PASSWORD_GRACE_MS     10000UL     // network is always open this long after power-on
 #define DEFAULT_AP_PASSWORD   "88888888"  // used only if no password has ever been saved
-#define WEBAPP_IDLE_OFF_MS    120000UL    // app switches off this long after the last phone left
+#define WEBAPP_IDLE_OFF_MS    300000UL    // app on this long after power-on / after the last phone left
 
 #define MAX_HISTORY_MINUTES   1440        // 24 h, session only (RAM)
 #define DEFAULT_TX_POWER_INDEX 8          // 18.5 dBm, same as the LS sender
 
-#define TRIGGER_FLASH_MS      250         // OLED frame flashes this long on every signal / shutter release
+#define TRIGGER_FLASH_MS      250         // OLED frame flashes this long on every signal sent
 #define FLASH_FRAME_PX        2
 #define DISPLAY_REFRESH_MS    200         // OLED redraw rate, only when the text changed (a redraw blocks
                                           // ~25 ms; readings keep arriving in the UART buffer meanwhile)
@@ -256,10 +243,10 @@ struct PersistedSettings {
   uint16_t maxCm;
   uint8_t  filter;
   uint8_t  txpower;
-  uint16_t durations[LEGACY_DURATIONS];  // unused since 1.1 (kept so older saved settings stay valid)
-  uint16_t extraCount;
-  uint16_t extraGap;
-  uint16_t triggerDelay;
+  uint16_t durations[5];                // unused (kept so older saved settings stay valid)
+  uint16_t extraCount;                  // unused since 1.3 (no camera output)
+  uint16_t extraGap;                    // unused since 1.3
+  uint16_t triggerDelay;                // unused since 1.3
   uint8_t  passwordSaved;               // 0 = never saved -> DEFAULT_AP_PASSWORD
   char     password[65];
   char     ssidCustom[33];              // empty = automatic MAC-based name
@@ -267,10 +254,10 @@ struct PersistedSettings {
   uint8_t  rcvmacs[MAX_PAIRED_RECEIVERS][6];
   uint16_t lunaRate;                    // added last so older saved settings stay valid
   uint16_t lunaMinAmp;
-  uint16_t triggerDuration;             // 1.1: single trigger duration
+  uint16_t triggerDuration;             // unused since 1.3
   uint8_t  mode;                        // 1.1: MODE_MOVEMENT / MODE_BARRIER
   uint8_t  moveFilter;                  // 1.1: cm
-  uint8_t  sndcnt;                      // 1.1: paired LS senders (receiver mode)
+  uint8_t  sndcnt;                      // unused since 1.3 (receiver mode removed)
   uint8_t  sndmacs[MAX_PAIRED_SENDERS][6];
   uint16_t rcvActive;                   // 1.4: bit i = trigger i is sent to (old saves: 0xFFFF = all on)
   char     rcvNames[MAX_PAIRED_RECEIVERS][SENDER_NAME_MAX + 1];
@@ -278,7 +265,10 @@ struct PersistedSettings {
   char     sndNames[MAX_PAIRED_SENDERS][SENDER_NAME_MAX + 1];
   char     wifiSsid[33];                // home WiFi for firmware updates
   char     wifiPass[65];                // stored only on the device
+  uint32_t extMagic;                    // 1.3: EXT_MAGIC when the fields below are valid
+  uint8_t  keepAlive;                   // 1.3: Keep App Alive, stored by Save Settings
 };
+#define EXT_MAGIC 0x4C444B31UL        // "LDK1"
 PersistedSettings settings;
 
 void saveSettings() {
@@ -298,15 +288,16 @@ void loadSettings() {
     settings.lunaRate = DEFAULT_LUNA_RATE;
     settings.lunaMinAmp = DEFAULT_LUNA_MIN_AMP;
     settings.txpower = DEFAULT_TX_POWER_INDEX;
-    settings.triggerDuration = DEFAULT_TRIGGER_DURATION_MS;
     settings.mode = DEFAULT_MODE;
     settings.moveFilter = DEFAULT_MOVE_FILTER_CM;
-    settings.extraCount = DEFAULT_EXTRA_SHOTS_COUNT;
-    settings.extraGap = DEFAULT_EXTRA_GAP_MS;
-    settings.triggerDelay = DEFAULT_TRIGGER_DELAY_MS;
     settings.rcvActive = 0xFFFF;
-    settings.sndActive = 0xFF;
     strlcpy(settings.wifiSsid, DEFAULT_WIFI_SSID, sizeof(settings.wifiSsid));
+    settings.extMagic = EXT_MAGIC;
+    saveSettings();
+  }
+  if (settings.extMagic != EXT_MAGIC) {     // saved by 1.2 or older: append the 1.3 fields
+    settings.extMagic = EXT_MAGIC;
+    settings.keepAlive = 0;
     saveSettings();
   }
   settings.password[sizeof(settings.password) - 1] = 0;
@@ -325,11 +316,6 @@ uint16_t lunaMinAmp = DEFAULT_LUNA_MIN_AMP;
 
 uint8_t triggerMode = DEFAULT_MODE;
 uint8_t moveFilterCm = DEFAULT_MOVE_FILTER_CM;
-uint16_t triggerDurationMs = DEFAULT_TRIGGER_DURATION_MS;
-uint16_t extraShotsCount = DEFAULT_EXTRA_SHOTS_COUNT;
-uint16_t extraGapMs = DEFAULT_EXTRA_GAP_MS;
-bool extraShotsEnabled = false;                                         // RAM only
-uint16_t triggerDelayMs = DEFAULT_TRIGGER_DELAY_MS;
 
 // Interval + Timer + Delayed Start: RAM only. Interval ON after power-up (normal mode:
 // repeats only while something is inside the range); Timer and Delayed Start off.
@@ -391,22 +377,9 @@ uint8_t pendingAckMacs[PAIR_ACK_QUEUE_LEN][6];
 volatile uint8_t pendingAckHead = 0, pendingAckTail = 0;
 
 bool beaconActive = false;
+bool beaconManual = false;         // started with BOOT 5-10 s / "Pairing Signal" (not the power-on one)
 unsigned long beaconStart = 0, lastBeacon = 0;
 bool pairAcksAccepted();   // defined next to the beacon code below
-
-// ----- receiver mode: paired LS senders -----
-uint8_t pairedSenderMacs[MAX_PAIRED_SENDERS][6];
-uint16_t pairedSenderLastSeq[MAX_PAIRED_SENDERS];
-bool pairedSenderHaveSeq[MAX_PAIRED_SENDERS];
-uint8_t pairedSenderCount = 0;
-uint8_t pairedSenderActive = 0xFF;                              // bit i = sender i is listened to
-char pairedSenderNames[MAX_PAIRED_SENDERS][SENDER_NAME_MAX + 1];
-bool senderPairWindow = false;
-unsigned long senderPairWindowEnd = 0;
-uint8_t senderPairNewCount = 0;
-uint8_t senderReAckedMask = 0;      // already-paired senders acked again in this window (bit = index)
-uint32_t signalsReceived = 0;
-volatile bool clearSendersRequested = false;
 
 #define RX_QUEUE_LEN 8
 struct RxEvent { uint8_t mac[6]; uint8_t type; uint16_t seq; char name[SENDER_NAME_MAX + 1]; };
@@ -423,7 +396,7 @@ String apPassword = "";
 bool apCurrentlyProtected = false;
 bool apConfigApplied = false;
 bool apActive = true;
-bool keepAppAlive = false;         // RAM only
+bool keepAppAlive = false;         // stored by Save Settings (settings.keepAlive)
 unsigned long apLastActivity = 0;  // last time a phone was connected (or the app was started)
 unsigned long lastApHousekeeping = 0;
 volatile bool manualShutdownRequested = false;
@@ -432,7 +405,6 @@ volatile bool clearPairingsRequested = false;
 // ---------------- Histogram (session only) ----------------
 uint16_t minuteCountsContact[MAX_HISTORY_MINUTES] = {0};   // range triggers + TEST
 uint16_t minuteCountsInterval[MAX_HISTORY_MINUTES] = {0};  // interval shots
-uint16_t minuteCountsReceived[MAX_HISTORY_MINUTES] = {0};  // triggers received from paired LS senders
 uint32_t sentSignalTotal = 0;
 unsigned long histogramStartMillis = 0;
 
@@ -456,18 +428,6 @@ uint8_t batColorLevel = 255;          // 0 green, 1 yellow, 2 orange, 3 red, 4 r
 unsigned long lastBatMs = 0, ledCycleStartMs = 0;
 uint8_t factoryStaMac[6];
 
-// ---------------- Local trigger output (receiver state machine) ----------------
-enum TriggerPhase { PHASE_IDLE, PHASE_PULSE_ON, PHASE_GAP };
-TriggerPhase triggerPhase = PHASE_IDLE;
-unsigned long phaseStartTime = 0;
-uint16_t activeDurationMs = 0;
-uint16_t activeGapMs = 0;
-uint8_t pulsesTotal = 0;
-uint8_t pulsesFired = 0;
-bool triggerPending = false;
-unsigned long pendingTriggerFireTime = 0;
-uint32_t shutterReleases = 0;
-
 // ---------------- Display ----------------
 U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, OLED_SCL, OLED_SDA);
 unsigned long lastDisplayDraw = 0;
@@ -487,7 +447,6 @@ void applySSIDChangeNow();
 void rebuildSSID();
 void stopWebApp(bool manual);
 void startWebApp();
-void requestLocalTrigger();
 void flashTriggerFrame();
 void recordInto(uint16_t* counts);
 void processMovement(uint16_t d, bool valid, unsigned long now);
@@ -661,9 +620,8 @@ void sendPacket(uint8_t type) {
 }
 
 // Runs in the WiFi callback: only queue things, the work happens in loop().
-//   PAIR_ACK          <- a receiver paired with us (we are its sender)
-//   TRIGGER/INTERVAL  <- from a paired LS sender (we are its receiver)
-//   anything          <- during the Listen-for-Sender window: a new sender to pair
+//   PAIR_ACK   <- a trigger paired with us
+//   PAIR_INFO  <- a trigger telling us its name
 void onDataRecv(const esp_now_recv_info_t *recvInfo, const uint8_t *data, int len) {
   const uint8_t* mac = recvInfo->src_addr;
   if (len < PACKET_LEN || len > 255) return;
@@ -679,8 +637,7 @@ void onDataRecv(const esp_now_recv_info_t *recvInfo, const uint8_t *data, int le
     pendingAckHead = next;
     return;
   }
-  if (type != PACKET_TYPE_TRIGGER && type != PACKET_TYPE_INTERVAL &&
-      type != PACKET_TYPE_BEACON && type != PACKET_TYPE_PAIR_INFO) return;
+  if (type != PACKET_TYPE_PAIR_INFO) return;
   uint8_t next = (rxHead + 1) % RX_QUEUE_LEN;
   if (next == rxTail) return;
   memcpy(rxQueue[rxHead].mac, mac, 6);
@@ -697,155 +654,12 @@ void processPendingPairAcks() {
   }
 }
 
-// ---------------- Receiver mode: paired LS senders ----------------
-int findPairedSender(const uint8_t* mac) {
-  for (uint8_t i = 0; i < pairedSenderCount; i++) if (macEquals(pairedSenderMacs[i], mac)) return i;
-  return -1;
-}
-
-bool senderIsActive(uint8_t i) { return (pairedSenderActive >> i) & 1; }
-
-void savePairedSenders() {
-  settings.sndcnt = pairedSenderCount;
-  memset(settings.sndmacs, 0, sizeof(settings.sndmacs));
-  memcpy(settings.sndmacs, pairedSenderMacs, pairedSenderCount * 6);
-  settings.sndActive = pairedSenderActive;
-  memset(settings.sndNames, 0, sizeof(settings.sndNames));
-  memcpy(settings.sndNames, pairedSenderNames, pairedSenderCount * (SENDER_NAME_MAX + 1));
-  saveSettings();
-}
-
-void setSenderActive(uint8_t i, bool on) {
-  if (on) pairedSenderActive |= (uint8_t)(1u << i);
-  else    pairedSenderActive &= (uint8_t)~(1u << i);
-  savePairedSenders();
-}
-
-void forgetSender(uint8_t idx) {
-  if (idx >= pairedSenderCount) return;
-  uint8_t last = pairedSenderCount - 1;
-  for (uint8_t i = idx; i < last; i++) {
-    memcpy(pairedSenderMacs[i], pairedSenderMacs[i + 1], 6);
-    memcpy(pairedSenderNames[i], pairedSenderNames[i + 1], SENDER_NAME_MAX + 1);
-    pairedSenderLastSeq[i] = pairedSenderLastSeq[i + 1];
-    pairedSenderHaveSeq[i] = pairedSenderHaveSeq[i + 1];
-  }
-  memset(pairedSenderNames[last], 0, SENDER_NAME_MAX + 1);
-  pairedSenderHaveSeq[last] = false;
-  pairedSenderActive = (uint8_t)(maskRemoveBit(pairedSenderActive, idx) | (1u << last));
-  pairedSenderCount--;
-  savePairedSenders();
-}
-
-void loadPairedSenders() {
-  uint8_t cnt = settings.sndcnt;
-  if (cnt > MAX_PAIRED_SENDERS) cnt = 0;
-  pairedSenderCount = cnt;
-  pairedSenderActive = settings.sndActive;
-  memset(pairedSenderNames, 0, sizeof(pairedSenderNames));
-  if (cnt > 0) {
-    memcpy(pairedSenderMacs, settings.sndmacs, cnt * 6);
-    memcpy(pairedSenderNames, settings.sndNames, cnt * (SENDER_NAME_MAX + 1));
-  }
-  for (uint8_t i = 0; i < MAX_PAIRED_SENDERS; i++) {
-    pairedSenderHaveSeq[i] = false;
-    sanitizeName(pairedSenderNames[i]);
-  }
-}
-
-void clearPairedSenders() {
-  pairedSenderCount = 0;
-  pairedSenderActive = 0xFF;
-  memset(pairedSenderNames, 0, sizeof(pairedSenderNames));
-  for (uint8_t i = 0; i < MAX_PAIRED_SENDERS; i++) pairedSenderHaveSeq[i] = false;
-  savePairedSenders();
-}
-
-// Tells the sender "I'm your receiver now", exactly like an Octocam receiver does.
-void sendPairAck(uint8_t* mac) {
-  addEspNowPeer(mac);
-  uint8_t payload[PACKET_LEN] = {
-    PRODUCT_SIGNATURE_0, PRODUCT_SIGNATURE_1, PRODUCT_SIGNATURE_2, PRODUCT_SIGNATURE_3,
-    PACKET_TYPE_PAIR_ACK, 0, 0
-  };
-  for (uint8_t i = 0; i < PAIR_ACK_COPIES; i++) {
-    esp_now_send(mac, payload, PACKET_LEN);
-    if (i < PAIR_ACK_COPIES - 1) delay(PAIR_ACK_GAP_MS);
-  }
-  // then our name, so an Octocam BT can list this device by name (others ignore it)
-  uint8_t nameLen = (uint8_t)strnlen(apSSID, SENDER_NAME_MAX);
-  uint8_t info[PACKET_LEN + 1 + SENDER_NAME_MAX] = {
-    PRODUCT_SIGNATURE_0, PRODUCT_SIGNATURE_1, PRODUCT_SIGNATURE_2, PRODUCT_SIGNATURE_3,
-    PACKET_TYPE_PAIR_INFO, 0, 0
-  };
-  info[PACKET_LEN] = nameLen;
-  memcpy(info + PACKET_LEN + 1, apSSID, nameLen);
-  delay(PAIR_ACK_GAP_MS);
-  esp_now_send(mac, info, PACKET_LEN + 1 + nameLen);
-}
-
-void openSenderPairWindow() {
-  senderPairWindow = true;
-  senderPairWindowEnd = millis() + SENDER_PAIR_WINDOW_MS;
-  senderPairNewCount = 0;
-  senderReAckedMask = 0;
-  displayDirty = true;
-}
-
 void processRxEvents() {
   processPendingPairAcks();                      // a trigger's acks first, so its PAIR_INFO below finds it
   while (rxTail != rxHead) {
     RxEvent ev = rxQueue[rxTail];
     rxTail = (rxTail + 1) % RX_QUEUE_LEN;
-    if (ev.type == PACKET_TYPE_PAIR_INFO) {      // a trigger telling us its name
-      setReceiverName(ev.mac, ev.name);
-      continue;
-    }
-    int idx = findPairedSender(ev.mac);
-
-    if (senderPairWindow && idx < 0) {           // a new sender heard during the window
-      if (ev.type != PACKET_TYPE_BEACON) continue; // only its pairing hello pairs, not running traffic
-      if (pairedSenderCount < MAX_PAIRED_SENDERS) {
-        memcpy(pairedSenderMacs[pairedSenderCount], ev.mac, 6);
-        strncpy(pairedSenderNames[pairedSenderCount], ev.name, SENDER_NAME_MAX);
-        pairedSenderNames[pairedSenderCount][SENDER_NAME_MAX] = 0;
-        pairedSenderHaveSeq[pairedSenderCount] = false;
-        pairedSenderActive |= (uint8_t)(1u << pairedSenderCount);   // a newly paired sender starts on
-        pairedSenderCount++;
-        senderPairNewCount++;
-        savePairedSenders();
-        sendPairAck(ev.mac);
-      }
-      continue;                                  // pairing traffic never fires the camera
-    }
-    if (idx < 0) continue;                       // not one of our senders
-    if (senderPairWindow && ev.type == PACKET_TYPE_BEACON && !((senderReAckedMask >> idx) & 1)) {
-      senderReAckedMask |= (uint8_t)(1u << idx); // already paired: ack again once, in case the
-      sendPairAck(ev.mac);                       // sender lost us from its own list
-    }
-    if (ev.type == PACKET_TYPE_BEACON) {         // a paired sender's hello: keep its name current
-      if (ev.name[0] && strcmp(pairedSenderNames[idx], ev.name) != 0) {
-        strncpy(pairedSenderNames[idx], ev.name, SENDER_NAME_MAX);
-        pairedSenderNames[idx][SENDER_NAME_MAX] = 0;
-        savePairedSenders();
-      }
-      continue;
-    }
-    if (ev.type != PACKET_TYPE_TRIGGER && ev.type != PACKET_TYPE_INTERVAL) continue;
-    if (!senderIsActive((uint8_t)idx)) continue; // switched off in Paired Devices
-    // the sender sends each event as broadcast + unicast: fire only once per sequence number
-    if (pairedSenderHaveSeq[idx] && pairedSenderLastSeq[idx] == ev.seq) continue;
-    pairedSenderLastSeq[idx] = ev.seq;
-    pairedSenderHaveSeq[idx] = true;
-
-    requestLocalTrigger();                       // local camera only -- nothing is sent on
-    flashTriggerFrame();
-    signalsReceived++;
-    recordInto(minuteCountsReceived);
-  }
-  if (senderPairWindow && (long)(millis() - senderPairWindowEnd) >= 0) {
-    senderPairWindow = false;
-    displayDirty = true;
+    if (ev.type == PACKET_TYPE_PAIR_INFO) setReceiverName(ev.mac, ev.name);   // a trigger telling us its name
   }
 }
 
@@ -868,6 +682,7 @@ bool pairAcksAccepted() {
 }
 
 void startBeaconBurst() {
+  beaconManual = false;                 // callers that are a manual pairing set it after this
   beaconActive = true;
   beaconStart = millis();
   sendBeacon();
@@ -899,7 +714,6 @@ void initEspNow() {
   esp_now_register_recv_cb(onDataRecv);
   addEspNowPeer(broadcastAddress);
   loadPairedReceivers();
-  loadPairedSenders();
 }
 
 // =====================================================================
@@ -915,17 +729,15 @@ void recordInto(uint16_t* counts) {
 void resetHistory() {
   memset(minuteCountsContact, 0, sizeof(minuteCountsContact));
   memset(minuteCountsInterval, 0, sizeof(minuteCountsInterval));
-  memset(minuteCountsReceived, 0, sizeof(minuteCountsReceived));
   histogramStartMillis = millis();
   sentSignalTotal = 0;
 }
 
 // =====================================================================
-// One signal = local camera + all paired receivers
+// One signal = a packet to every paired trigger that is on
 // =====================================================================
 void fireSignal(uint8_t type) {
-  sendPacket(type);                    // radio first: it's what the remote cameras wait for
-  requestLocalTrigger();
+  sendPacket(type);
   signalsSent++;
   if (type == PACKET_TYPE_INTERVAL) {
     recordInto(minuteCountsInterval);
@@ -935,77 +747,6 @@ void fireSignal(uint8_t type) {
   }
   flashTriggerFrame();
   rgbFlashUntil = millis() + RGB_FLASH_MS;
-}
-
-// =====================================================================
-// Local camera output -- same behaviour as the Octocam receiver
-// =====================================================================
-void setOpto(bool on) {
-  digitalWrite(OPTO_PIN, (OPTO_ACTIVE_HIGH ? on : !on) ? HIGH : LOW);
-}
-
-void beginPulse() {
-  setOpto(true);
-  shutterReleases++;
-  flashTriggerFrame();                  // every camera release, extra triggers included
-}
-void endPulse() {
-  setOpto(false);
-}
-
-uint16_t currentPulseDurationMs() {
-  return activeDurationMs;
-}
-
-void startTrigger() {
-  activeGapMs = extraGapMs;
-  pulsesFired = 0;
-  activeDurationMs = triggerDurationMs;
-  uint16_t extra = extraShotsEnabled ? extraShotsCount : 0;
-  pulsesTotal = (uint8_t)(1 + (extra > 200 ? 200 : extra));
-  triggerPhase = PHASE_PULSE_ON;
-  phaseStartTime = millis();
-  beginPulse();
-}
-
-void updateTrigger() {
-  if (triggerPhase == PHASE_IDLE) return;
-  unsigned long elapsed = millis() - phaseStartTime;
-  if (triggerPhase == PHASE_PULSE_ON) {
-    if (elapsed >= currentPulseDurationMs()) {
-      endPulse();
-      pulsesFired++;
-      if (pulsesFired >= pulsesTotal) {
-        triggerPhase = PHASE_IDLE;
-      } else {
-        triggerPhase = PHASE_GAP;
-        phaseStartTime = millis();
-      }
-    }
-  } else if (elapsed >= activeGapMs) {
-    triggerPhase = PHASE_PULSE_ON;
-    phaseStartTime = millis();
-    beginPulse();
-  }
-}
-
-// A signal for the local camera. Fires now, or after the trigger delay.
-// A signal arriving while the camera is still mid-sequence is skipped,
-// exactly like on a receiver.
-void requestLocalTrigger() {
-  if (triggerDelayMs == 0) {
-    if (triggerPhase == PHASE_IDLE) startTrigger();
-  } else {
-    triggerPending = true;
-    pendingTriggerFireTime = millis() + triggerDelayMs;
-  }
-}
-
-void updatePendingTrigger() {
-  if (triggerPending && (long)(millis() - pendingTriggerFireTime) >= 0) {
-    triggerPending = false;
-    if (triggerPhase == PHASE_IDLE) startTrigger();
-  }
 }
 
 // =====================================================================
@@ -1422,7 +1163,6 @@ void updateBattery() {
 void rgbWrite(uint8_t red, uint8_t green, uint8_t blue);
 
 void enterBatterySleep(bool displayStarted) {
-  setOpto(false);
   rgbWrite(0, 0, 0);
   ledWrite(false);
   if (displayStarted) u8g2.setPowerSave(1);
@@ -1501,7 +1241,7 @@ void updateRgb() {
   }
   if ((long)(rgbFlashUntil - now) > 0) { rgbWrite(255, 255, 255); return; }
   bool blinkOn = (now / RGB_BLINK_MS) % 2 == 0;
-  if (senderPairWindow) { rgbWrite(0, 0, blinkOn ? RGB_DIM : 0); return; }   // like the remote: not during the power-on hello
+  if (beaconActive && beaconManual) { rgbWrite(0, 0, blinkOn ? RGB_DIM : 0); return; }   // like the remote: not during the power-on hello
   if (!batteryOk()) { rgbWrite(0, 0, 0); batColorLevel = 255; return; }
   updateBatColorLevel();
   switch (batColorLevel) {
@@ -1527,7 +1267,7 @@ uint8_t cmToX(uint16_t cm) {
 }
 
 // 0.91" 128x32:
-//  top line (5x7) : trigger duration / "Pairing" left, battery % centre, mode right
+//  top line (5x7) : interval / "Pairing" left, battery % centre, mode right
 //  middle         : live distance in cm
 //  bottom         : distance meter 0-8 m, range bar + live marker
 void drawDisplay(const char* txt, bool flash) {
@@ -1538,8 +1278,9 @@ void drawDisplay(const char* txt, bool flash) {
   // --- top line ---
   u8g2.setFont(u8g2_font_5x7_tr);
   char left[12];
-  if (senderPairWindow) strcpy(left, "Pairing");
-  else snprintf(left, sizeof(left), "%ums", triggerDurationMs);
+  if (beaconActive && beaconManual) strcpy(left, "Pairing");
+  else if (intervalEnabled) snprintf(left, sizeof(left), "%lums", intervalMs);
+  else strcpy(left, "Int off");
   u8g2.drawStr(0, 6, left);
   const char* mode = triggerMode == MODE_MOVEMENT ? "Movement" : "Barrier";
   u8g2.drawStr(128 - u8g2.getStrWidth(mode), 6, mode);
@@ -1602,9 +1343,9 @@ void tierText(uint8_t tier, const char** l1, const char** l2) {
   switch (tier) {
     case 0: *l1 = "Switch to"; *l2 = triggerMode == MODE_MOVEMENT ? "Light-Barrier" : "Movement"; break;
     case 1: *l1 = "Web App"; break;
-    case 2: *l1 = "Extra Triggers"; *l2 = extraShotsEnabled ? "off" : "on"; break;
+    case 2: *l1 = "Cancel"; break;
     case 3: *l1 = "Pairing"; break;
-    case 4: *l1 = "Clear"; *l2 = "Pairings"; break;
+    case 4: *l1 = "Clear"; *l2 = "Triggers"; break;
     default: *l1 = "Reset"; *l2 = "Password"; break;
   }
 }
@@ -1622,7 +1363,7 @@ void updateDisplay() {
   if (buttonHeld || (long)(buttonMsgUntil - now) > 0) {
     const char *l1, *l2;
     char key[48];
-    if (buttonHeld) { tierText(buttonTier, &l1, &l2); snprintf(key, sizeof(key), "H|%u|%u|%u", buttonTier, triggerMode, extraShotsEnabled ? 1 : 0); }
+    if (buttonHeld) { tierText(buttonTier, &l1, &l2); snprintf(key, sizeof(key), "H|%u|%u", buttonTier, triggerMode); }
     else { l1 = buttonMsg1; l2 = buttonMsg2; snprintf(key, sizeof(key), "M|%s|%s", buttonMsg1, buttonMsg2); }
     displayDirty = false;
     if (strcmp(key, lastDisplayKey) == 0) return;
@@ -1632,16 +1373,14 @@ void updateDisplay() {
     return;
   }
   if (now - lastDisplayDraw < DISPLAY_REFRESH_MS && !displayDirty) return;
-  // never start a ~25 ms redraw in the middle of a short shutter pulse
-  if (triggerPhase == PHASE_PULSE_ON && currentPulseDurationMs() < 100) return;
   char txt[12];
   bool valid = sensorOk && lunaValid;
   if (valid) snprintf(txt, sizeof(txt), "%u cm", lunaCm);
   else strcpy(txt, "---");
   bool flash = (long)(flashUntil - now) > 0;
   char key[48];
-  snprintf(key, sizeof(key), "%s|%u|%u|%u|%u|%u|%u|%d", txt, triggerMode, senderPairWindow ? 1 : 0,
-           flash ? 1 : 0, minCm, maxCm, triggerDurationMs, batteryOk() ? batteryPercent() : -1);
+  snprintf(key, sizeof(key), "%s|%u|%u|%u|%u|%u|%lu|%d", txt, triggerMode, (beaconActive && beaconManual) ? 1 : 0,
+           flash ? 1 : 0, minCm, maxCm, intervalEnabled ? intervalMs : 0UL, batteryOk() ? batteryPercent() : -1);
   displayDirty = false;
   if (strcmp(key, lastDisplayKey) == 0) return;   // nothing changed -> no 25 ms redraw
   strcpy(lastDisplayKey, key);
@@ -1689,11 +1428,6 @@ String configJson() {
   j += ",\"mode\":" + String(triggerMode);
   j += ",\"moveFilter\":" + String(moveFilterCm);
   j += ",\"minSpanCm\":" + String(minSpanCm());
-  j += ",\"triggerDuration\":" + String(triggerDurationMs);
-  j += ",\"triggerDelay\":" + String(triggerDelayMs);
-  j += ",\"extraCount\":" + String(extraShotsCount);
-  j += ",\"extraGap\":" + String(extraGapMs);
-  j += ",\"extraEnabled\":" + String(extraShotsEnabled ? "true" : "false");
   j += ",\"interval\":" + String(intervalMs);
   j += ",\"intervalEnabled\":" + String(intervalEnabled ? "true" : "false");
   j += ",\"intervalForced\":" + String(intervalForced ? "true" : "false");
@@ -1707,8 +1441,6 @@ String configJson() {
   j += ",\"passwordSet\":" + String(apPassword.length() >= 8 ? "true" : "false");
   j += ",\"protectedNow\":" + String(apCurrentlyProtected ? "true" : "false");
   j += ",\"pairedReceiverCount\":" + String(pairedReceiverCount);
-  j += ",\"pairedSenderCount\":" + String(pairedSenderCount);
-  j += ",\"senderPairWindow\":" + String(senderPairWindow ? "true" : "false");
   j += ",\"beacon\":" + String(beaconActive ? "true" : "false");
   j += ",\"unsaved\":" + String(settingsDirty ? "true" : "false");
   j += ",\"ssid\":\"" + String(apSSID) + "\"";
@@ -1767,27 +1499,6 @@ void handlePostConfig() {
     scheduleLunaConfig(0);
   }
 
-  // ---- local camera output: applied now, stored by "Save Settings" (extra on/off never) ----
-  if (server.hasArg("triggerDuration")) {
-    triggerDurationMs = (uint16_t)constrain(server.arg("triggerDuration").toInt(), (long)MIN_DURATION_MS, (long)MAX_DURATION_MS);
-    settingsDirty = true;
-  }
-  if (server.hasArg("triggerDelay")) {
-    triggerDelayMs = (uint16_t)constrain(server.arg("triggerDelay").toInt(), 0L, (long)MAX_TRIGGER_DELAY_MS);
-    settingsDirty = true;
-  }
-  if (server.hasArg("extraCount")) {
-    extraShotsCount = (uint16_t)constrain(server.arg("extraCount").toInt(), 0L, (long)MAX_EXTRA_SHOTS_TYPED);
-    settingsDirty = true;
-  }
-  if (server.hasArg("extraGap")) {
-    extraGapMs = (uint16_t)constrain(server.arg("extraGap").toInt(), (long)MIN_EXTRA_GAP_MS, (long)MAX_EXTRA_GAP_MS);
-    settingsDirty = true;
-  }
-  if (server.hasArg("extraEnabled")) {
-    extraShotsEnabled = server.arg("extraEnabled").toInt() != 0;
-  }
-
   // ---- interval (RAM only) ----
   if (server.hasArg("interval")) {
     intervalMs = (unsigned long)constrain(server.arg("interval").toInt(), (long)MIN_INTERVAL_MS, (long)MAX_INTERVAL_MS);
@@ -1822,6 +1533,7 @@ void handlePostConfig() {
   if (server.hasArg("keepAlive")) {
     keepAppAlive = server.arg("keepAlive").toInt() != 0;
     apLastActivity = millis();
+    settingsDirty = true;                       // kept after a power cycle only with Save Settings
   }
   if (server.hasArg("password")) {
     String newPass = server.arg("password");
@@ -1855,12 +1567,11 @@ void handlePostConfig() {
 void handleLive() {
   char buf[260];
   snprintf(buf, sizeof(buf),
-           "{\"ok\":%s,\"v\":%s,\"d\":%u,\"a\":%u,\"t\":%d,\"in\":%s,\"rps\":%lu,\"n\":%lu,\"r\":%lu,\"m\":%u,\"pw\":%s,"
+           "{\"ok\":%s,\"v\":%s,\"d\":%u,\"a\":%u,\"t\":%d,\"in\":%s,\"rps\":%lu,\"n\":%lu,\"m\":%u,"
            "\"bp\":%d,\"bv\":%.2f,\"bs\":\"%s\"}",
            sensorOk ? "true" : "false", (sensorOk && lunaValid) ? "true" : "false",
            lunaCm, lunaAmp, lunaTempC, objectPresent ? "true" : "false",
-           (unsigned long)readingsPerSec, (unsigned long)signalsSent, (unsigned long)signalsReceived,
-           triggerMode, senderPairWindow ? "true" : "false",
+           (unsigned long)readingsPerSec, (unsigned long)signalsSent, triggerMode,
            batteryPercent(), batVolts, batteryState());
   server.send(200, "application/json", buf);
 }
@@ -1881,12 +1592,6 @@ void handleHistogram() {
   chunk += "],\"interval\":[";
   for (unsigned long i = 0; i <= currentMinute; i++) {
     chunk += String(minuteCountsInterval[i]);
-    if (i < currentMinute) chunk += ",";
-    if (chunk.length() > 500) { server.sendContent(chunk); chunk = ""; }
-  }
-  chunk += "],\"received\":[";
-  for (unsigned long i = 0; i <= currentMinute; i++) {
-    chunk += String(minuteCountsReceived[i]);
     if (i < currentMinute) chunk += ",";
     if (chunk.length() > 500) { server.sendContent(chunk); chunk = ""; }
   }
@@ -1915,7 +1620,7 @@ void handleIntervalStatus() {
   server.send(200, "application/json", json);
 }
 
-// TEST: a full signal -- local camera (with duration/extras/delay) + all paired receivers
+// TEST: one signal to all paired triggers that are on
 void handleTrigger() {
   fireSignal(PACKET_TYPE_TRIGGER);
   server.send(200, "application/json", "{\"ok\":true}");
@@ -1923,21 +1628,12 @@ void handleTrigger() {
 
 void handlePairBeacon() {
   startBeaconBurst();
+  beaconManual = true;
   server.send(200, "application/json", configJson());
 }
 
 void handleClearPairings() {
   clearPairingsRequested = true;
-  server.send(200, "application/json", "{\"ok\":true}");
-}
-
-void handlePairSender() {
-  openSenderPairWindow();
-  server.send(200, "application/json", configJson());
-}
-
-void handleClearSenders() {
-  clearSendersRequested = true;
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
@@ -1955,16 +1651,10 @@ bool macFromArg(const String& str, uint8_t* mac) {
   return true;
 }
 
-// {"senders":[{"mac","name","active"},...],"triggers":[...]} -- same as the trigger / Octocam BT.
+// {"triggers":[{"mac","name","active"},...]} -- same as the trigger / Octocam BT.
 // "name" is empty for devices paired before names existed; the page shows a fallback then.
 String devicesJson() {
-  String j = "{\"senders\":[";
-  for (uint8_t i = 0; i < pairedSenderCount; i++) {
-    if (i > 0) j += ",";
-    j += "{\"mac\":\"" + macToString(pairedSenderMacs[i]) + "\",\"name\":\"" + String(pairedSenderNames[i]) +
-         "\",\"active\":" + (senderIsActive(i) ? "true" : "false") + "}";
-  }
-  j += "],\"triggers\":[";
+  String j = "{\"triggers\":[";
   for (uint8_t i = 0; i < pairedReceiverCount; i++) {
     if (i > 0) j += ",";
     j += "{\"mac\":\"" + macToString(pairedReceiverMacs[i]) + "\",\"name\":\"" + String(pairedReceiverNames[i]) +
@@ -1979,22 +1669,6 @@ void handleGetDevices() {
 }
 
 // POST mac=..&active=0|1 -- by MAC, so a tap can't hit the wrong device if the list changed
-void handleSenderActive() {
-  uint8_t mac[6];
-  if (server.hasArg("mac") && server.hasArg("active") && macFromArg(server.arg("mac"), mac)) {
-    int idx = findPairedSender(mac);
-    if (idx >= 0) setSenderActive((uint8_t)idx, server.arg("active").toInt() != 0);
-  }
-  server.send(200, "application/json", devicesJson());
-}
-void handleSenderForget() {
-  uint8_t mac[6];
-  if (server.hasArg("mac") && macFromArg(server.arg("mac"), mac)) {
-    int idx = findPairedSender(mac);
-    if (idx >= 0) forgetSender((uint8_t)idx);
-  }
-  server.send(200, "application/json", devicesJson());
-}
 void handleTargetActive() {
   uint8_t mac[6];
   if (server.hasArg("mac") && server.hasArg("active") && macFromArg(server.arg("mac"), mac)) {
@@ -2026,11 +1700,8 @@ void copyLiveToSettings() {
   settings.filter = filterCount;
   settings.lunaRate = lunaRate;
   settings.lunaMinAmp = lunaMinAmp;
-  settings.triggerDuration = triggerDurationMs;
-  settings.extraCount = extraShotsCount;
-  settings.extraGap = extraGapMs;
-  settings.triggerDelay = triggerDelayMs;
   settings.txpower = txPowerIndex;
+  settings.keepAlive = keepAppAlive ? 1 : 0;
 }
 
 void handleSaveSettings() {
@@ -2040,21 +1711,15 @@ void handleSaveSettings() {
   server.send(200, "application/json", configJson());
 }
 
-// Resets the range (0.3-8 m), movement filter, trigger duration, extra
-// triggers, gap, delay and interval to the sketch defaults -- live only,
-// "Save Settings" stores them. Trigger range, filter,
-// signal strength, password, SSID and pairings are untouched.
+// Resets the range (0.3-8 m), sideways threshold and interval to the sketch defaults --
+// live only, "Save Settings" stores them. Mode, sensitivity, signal strength, Keep App
+// Alive, password, SSID and pairings are untouched.
 void handleResetDefaults() {
   minCm = DEFAULT_MIN_CM;
   maxCm = DEFAULT_MAX_CM;
   enforceSpan(true);
   moveFilterCm = DEFAULT_MOVE_FILTER_CM;
   resetDetection();
-  triggerDurationMs = DEFAULT_TRIGGER_DURATION_MS;
-  triggerDelayMs = DEFAULT_TRIGGER_DELAY_MS;
-  extraShotsCount = DEFAULT_EXTRA_SHOTS_COUNT;
-  extraShotsEnabled = false;
-  extraGapMs = DEFAULT_EXTRA_GAP_MS;
   settingsDirty = true;
 
   intervalEnabled = true;
@@ -2153,9 +1818,6 @@ void doUpdateInstall() {
 // version differs (restarts), otherwise back to the own network and ESP-NOW on channel 11.
 void runUpdate() {
   delay(300);                                  // let the answer reach the phone
-  setOpto(false);
-  triggerPhase = PHASE_IDLE;
-  triggerPending = false;
   server.stop();
   dnsServer.stop();
   WiFi.softAPdisconnect(true);
@@ -2281,18 +1943,15 @@ void runButtonAction(uint8_t tier) {
       showButtonMessage("Web App", "on");
       break;
     case 2:
-      extraShotsEnabled = !extraShotsEnabled;
-      showButtonMessage("Extra Triggers", extraShotsEnabled ? "on" : "off");
-      break;
+      break;                       // released in the cancel tier: nothing happens
     case 3:
-      openSenderPairWindow();      // senders: hello-only, 8 s ("Pairing" top left meanwhile)
-      startBeaconBurst();          // triggers: our hello for 10 s
+      startBeaconBurst();          // triggers: our hello for 10 s (RGB blinks blue meanwhile)
+      beaconManual = true;
       showButtonMessage("Pairing", "started");
       break;
     case 4:
-      clearPairedSenders();
       clearPairedReceivers();
-      showButtonMessage("Pairings", "cleared");
+      showButtonMessage("Triggers", "cleared");
       break;
     default:
       apPassword = DEFAULT_AP_PASSWORD;
@@ -2334,8 +1993,6 @@ void checkWakeButton() {
 // =====================================================================
 void setup() {
   esp_read_mac(factoryStaMac, ESP_MAC_WIFI_STA);
-  pinMode(OPTO_PIN, OUTPUT);
-  setOpto(false);
   pinMode(WAKE_BUTTON_PIN, INPUT_PULLUP);
   rgbWrite(0, 0, 0);
   pinMode(LED_PIN, OUTPUT);
@@ -2366,13 +2023,8 @@ void setup() {
   if (settings.moveFilter < MIN_MOVE_FILTER_CM || settings.moveFilter > MAX_MOVE_FILTER_CM || settings.moveFilter % 20) {
     settings.moveFilter = DEFAULT_MOVE_FILTER_CM; fix = true;
   }
-  if (settings.triggerDuration < MIN_DURATION_MS || settings.triggerDuration > MAX_DURATION_MS) {
-    settings.triggerDuration = DEFAULT_TRIGGER_DURATION_MS; fix = true;
-  }
-  if (settings.sndcnt > MAX_PAIRED_SENDERS) { settings.sndcnt = 0; fix = true; }
   triggerMode = settings.mode;
   moveFilterCm = settings.moveFilter;
-  triggerDurationMs = settings.triggerDuration;
   enforceSpan(true);
   if (settings.minCm != minCm || settings.maxCm != maxCm) { settings.minCm = minCm; settings.maxCm = maxCm; fix = true; }
   if (fix) saveSettings();
@@ -2387,9 +2039,7 @@ void setup() {
     saveSettings();
   }
   scheduleLunaConfig(1000);                  // give the TF-Luna time to boot first
-  extraShotsCount = settings.extraCount > MAX_EXTRA_SHOTS_TYPED ? MAX_EXTRA_SHOTS_TYPED : settings.extraCount;
-  extraGapMs = constrain(settings.extraGap, MIN_EXTRA_GAP_MS, MAX_EXTRA_GAP_MS);
-  triggerDelayMs = settings.triggerDelay > MAX_TRIGGER_DELAY_MS ? MAX_TRIGGER_DELAY_MS : settings.triggerDelay;
+  keepAppAlive = settings.keepAlive == 1;
   txPowerIndex = settings.txpower > 10 ? DEFAULT_TX_POWER_INDEX : settings.txpower;
   apPassword = settings.passwordSaved ? String(settings.password) : String(DEFAULT_AP_PASSWORD);
 
@@ -2416,11 +2066,7 @@ void setup() {
   server.on("/api/trigger", HTTP_POST, handleTrigger);
   server.on("/api/pair", HTTP_POST, handlePairBeacon);
   server.on("/api/clear-pairings", HTTP_POST, handleClearPairings);
-  server.on("/api/pair-sender", HTTP_POST, handlePairSender);
-  server.on("/api/clear-senders", HTTP_POST, handleClearSenders);
   server.on("/api/devices", HTTP_GET, handleGetDevices);
-  server.on("/api/sender-active", HTTP_POST, handleSenderActive);
-  server.on("/api/sender-forget", HTTP_POST, handleSenderForget);
   server.on("/api/target-active", HTTP_POST, handleTargetActive);
   server.on("/api/target-forget", HTTP_POST, handleTargetForget);
   server.on("/api/shutdown-webapp", HTTP_POST, handleShutdownWebApp);
@@ -2445,13 +2091,11 @@ void setup() {
 
 void loop() {
   readLuna();                // first, every pass: trigger decisions come from here
-  processRxEvents();         // triggers from paired LS senders
+  processRxEvents();         // pairing acks + names from triggers
   updatePresence();
   updateLunaConfig();
   checkInterval();
   checkIntervalTimers();
-  updatePendingTrigger();
-  updateTrigger();
   updateBeacon();
   processPendingPairAcks();
   checkWakeButton();
@@ -2464,7 +2108,6 @@ void loop() {
     server.handleClient();
     if (manualShutdownRequested) { manualShutdownRequested = false; stopWebApp(true); }
     if (clearPairingsRequested) { clearPairingsRequested = false; clearPairedReceivers(); }
-    if (clearSendersRequested) { clearSendersRequested = false; clearPairedSenders(); }
     if (updateRequested) { updateRequested = false; runUpdate(); return; }
     unsigned long now = millis();
     if (apActive && now - lastApHousekeeping >= 250) {

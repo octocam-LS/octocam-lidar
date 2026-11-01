@@ -20,10 +20,7 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
   .wrap { padding:24px 16px 48px 16px; max-width:520px; margin:0 auto; }
   h1 { font-family:'Arial Black', Arial, Helvetica, sans-serif; font-weight:900;
     text-align:center; color:var(--fg); font-size:clamp(1.6rem,11vw,3.2rem);
-    line-height:1.05; margin:8px 0 6px 0; word-break:break-word; }
-  .live { text-align:center; font-size:0.8rem; color:var(--muted); margin-bottom:22px;
-    font-variant-numeric:tabular-nums; }
-  .live.ok::before { content:"\25CF  "; color:var(--steel); }
+    line-height:1.05; margin:14px 0 22px 0; word-break:break-word; }
 
   .card { background:var(--panel); border:1px solid var(--line); border-radius:12px;
     padding:12px 10px 8px; margin-bottom:18px; transition:border-color 0.15s ease; }
@@ -95,10 +92,10 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
   .dim { opacity:0.4; }
 
   /* Sensitivity presets + sliders */
-  .preset-row { display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); gap:4px; padding:4px;
+  .preset-row { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:3px; padding:4px;
     background:#2c2c2c; border:1px solid var(--line); border-radius:10px; }
   .preset-row button { padding:11px 2px; border:none; border-radius:8px; background:transparent; color:#999;
-    font-family:inherit; font-weight:700; font-size:clamp(0.78rem,3.4vw,0.95rem); cursor:pointer;
+    font-family:inherit; font-weight:700; font-size:clamp(0.7rem,3.1vw,0.95rem); cursor:pointer;
     touch-action:manipulation; transition:background 0.2s ease, color 0.2s ease; }
   .preset-row button.active { background:var(--steel); color:var(--fg); }
   .preset-note { text-align:center; font-size:0.78rem; color:var(--muted); margin:8px 0 18px; min-height:1.2em; }
@@ -122,6 +119,9 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
     font-variant-numeric:tabular-nums; }
   .sl-labels span { position:absolute; transform:translateX(-50%); white-space:nowrap; }
   .sl-labels span.on { color:var(--fg); font-weight:700; }
+  /* a preset is active: the sliders only show its values; a finger on them scrolls the page */
+  .sliders.locked { opacity:0.55; }
+  .sliders.locked .sl-track { touch-action:pan-y; cursor:default; }
   .sl-ends { display:flex; justify-content:space-between; font-size:0.68rem; color:#777; margin:2px 0 0;
     text-transform:uppercase; letter-spacing:0.06em; }
   .chip-toggle { display:table; background:#5a5a5a; border:none; border-radius:8px; color:var(--fg);
@@ -201,6 +201,9 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
   .forget-btn.armed { background:#c0392b; }
 
   .wrap { position:relative; }
+  .temp-badge { position:absolute; top:6px; left:16px; height:16px; display:flex; align-items:center;
+    font-size:0.72rem; font-weight:700; color:var(--muted); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .temp-badge b { color:var(--fg); margin-left:5px; }
   .bat-badge { position:absolute; top:6px; right:16px; display:flex; align-items:center; gap:6px;
     font-size:0.72rem; font-weight:700; color:var(--muted); font-variant-numeric:tabular-nums; }
   .bat-ico { position:relative; width:33px; height:16px; border:2px solid currentColor; border-radius:4px;
@@ -220,9 +223,9 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
 </head>
 <body>
 <div class="wrap">
+  <div class="temp-badge" id="tempBadge">connecting...</div>
   <div class="bat-badge" id="batBadge" title="battery"><span id="batVolt"></span><span class="bat-ico"><span class="bat-fill" id="batFill"></span></span><span id="batPct">--</span></div>
   <h1>Octocam Lidar</h1>
-  <div class="live" id="live">connecting...</div>
 
   <!-- ================= distance range ruler ================= -->
   <div class="card" id="rulerCard">
@@ -249,7 +252,7 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
       </div>
     </div>
   </div>
-  <div class="unit-note" style="margin-bottom:24px;">Drag the handle bars on the ruler (or use the arrows) to set the trigger range. A trigger fires the camera on this device and all paired receivers, once per pass. Press Save Settings below to keep it after a power cycle.</div>
+  <div style="height:18px;"></div>
 
   <div class="mode-switch" role="group" aria-label="Trigger mode">
     <button type="button" id="modeMove">Movement</button>
@@ -274,10 +277,11 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
     <button type="button" data-preset="far">Far</button>
     <button type="button" data-preset="macro">Macro</button>
     <button type="button" data-preset="rain">Rain</button>
+    <button type="button" data-preset="custom">Custom</button>
   </div>
   <div class="preset-note" id="presetNote"></div>
 
-  <div class="sliders">
+  <div class="sliders" id="sliders">
     <div class="sl" id="slRate">
       <div class="sl-head"><span class="sl-name">Readings/s</span><span class="sl-val"></span></div>
       <div class="sl-track" tabindex="0" role="slider" aria-label="Readings per second"><div class="sl-fill"></div><div class="sl-thumb"></div></div>
@@ -298,47 +302,6 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
   <div class="unit-note" id="filterNote" style="margin-bottom:4px;">Movement Filter: readings in a row before triggering (Light-Barrier only).</div>
 
   <hr class="section-rule">
-
-  <!-- ================= camera output on this device ================= -->
-  <div class="duration-row">
-    <div class="duration-label chip-label" style="width:76px;">Trigger Duration</div>
-    <div class="field-row">
-      <button class="arrow-btn arrow-left" id="durDown"><span class="arrow-shape"></span></button>
-      <input class="value-input" type="text" id="durValue" inputmode="numeric">
-      <button class="arrow-btn arrow-right" id="durUp"><span class="arrow-shape"></span></button>
-    </div>
-  </div>
-  <div class="unit-note" style="margin-top:-6px; margin-bottom:26px;">how long the shutter is held for the camera on this device (default 250 ms)</div>
-
-  <div class="field-block">
-    <button type="button" class="chip-toggle" id="extraToggleBtn">Extra Triggers</button>
-    <div class="field-row">
-      <button class="arrow-btn arrow-left" id="extraCountDown"><span class="arrow-shape"></span></button>
-      <input class="value-input" type="number" id="extraCountValue" inputmode="numeric">
-      <button class="arrow-btn arrow-right" id="extraCountUp"><span class="arrow-shape"></span></button>
-    </div>
-    <div class="unit-note" id="extraCountNote"></div>
-  </div>
-
-  <div class="duration-row">
-    <div class="duration-label" style="width:76px;">Gap Between Triggers</div>
-    <div class="field-row">
-      <button class="arrow-btn arrow-left" id="extraGapDown"><span class="arrow-shape"></span></button>
-      <input class="value-input" type="text" id="extraGapValue" inputmode="numeric">
-      <button class="arrow-btn arrow-right" id="extraGapUp"><span class="arrow-shape"></span></button>
-    </div>
-  </div>
-  <div class="unit-note" style="margin-top:-6px; margin-bottom:26px;">between extra triggers</div>
-
-  <div class="duration-row">
-    <div class="duration-label chip-label">Delay</div>
-    <div class="field-row">
-      <button class="arrow-btn arrow-left" id="triggerDelayDown"><span class="arrow-shape"></span></button>
-      <input class="value-input" type="text" id="triggerDelayValue" inputmode="numeric">
-      <button class="arrow-btn arrow-right" id="triggerDelayUp"><span class="arrow-shape"></span></button>
-    </div>
-  </div>
-  <div class="unit-note" style="margin-top:-6px; margin-bottom:26px;">delay for the camera on this device (paired receivers use their own delay)</div>
 
   <div class="field-block" id="intervalBlock">
     <button class="interval-btn off" id="intervalToggleBtn">Interval</button>
@@ -385,7 +348,7 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
 
   <div class="small-btn-wrap" style="margin-bottom:28px;">
     <button class="small-btn warn" id="resetDefaultsBtn">Reset to Default</button>
-    <div class="unit-note" style="margin-top:8px;">Changes work right away but are only kept after a power cycle when you press Save Settings (password, SSID and pairings are always kept). Reset to Default sets the range back to 0.3-8 m, the movement filter to 60 cm, the trigger duration to 250 ms, extra triggers, gap and delay to their defaults and switches the interval off -- press Save Settings to keep that too. Mode and sensitivity are not changed.</div>
+    <div class="unit-note" style="margin-top:8px;">Changes work right away but are only kept after a power cycle when you press Save Settings (password, SSID and pairings are always kept). Reset to Default sets the range back to 0.3-8 m, the sideways threshold to 60 cm and the interval to 2000 ms (on) -- press Save Settings to keep the range and threshold. Mode, sensitivity and Keep App Alive are not changed.</div>
   </div>
 
   <div class="field-block">
@@ -407,12 +370,12 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
       <div class="hist-yaxis" id="histYAxis"></div>
       <div class="hist-scroll" id="histScroll"><canvas id="histCanvas"></canvas></div>
     </div>
-    <div class="unit-note">signals per minute, this session only<br><span class="legend-dot" style="background:#e48fa6"></span>distance triggers &nbsp; <span class="legend-dot" style="background:#4fd1c5"></span>interval &nbsp; <span class="legend-dot" style="background:#4682b4"></span>received from LS senders</div>
+    <div class="unit-note">signals per minute, this session only<br><span class="legend-dot" style="background:#e48fa6"></span>distance triggers &nbsp; <span class="legend-dot" style="background:#4fd1c5"></span>interval</div>
   </div>
 
   <div class="shutdown-btn-wrap">
     <button class="shutdown-btn" id="keepAliveBtn">Keep App Alive</button>
-    <div class="unit-note" style="margin:6px 0 16px 0;">stops the automatic shutdown 2 minutes after your phone disconnects (not saved)</div>
+    <div class="unit-note" style="margin:6px 0 16px 0;">stops the automatic shutdown 5 minutes after your phone disconnects -- press Save Settings to keep it on after a power cycle</div>
     <button class="shutdown-btn" id="shutdownBtn">Shutdown App</button>
     <div class="unit-note" style="margin-top:6px;">hold the BOOT button on the board for 1-2.5 s to bring the app back (the display shows "Web App" while you hold it)</div>
   </div>
@@ -434,24 +397,16 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
 
   <div class="field-block" id="devicesBlock">
     <button class="interval-btn" id="devicesToggleBtn">Paired Devices</button>
-    <div class="pairing-block" style="margin-top:0;">
-      <button class="small-btn" id="pairSenderBtn">Pair Senders</button>
-      <button class="small-btn warn" id="clearSendersBtn">Clear Senders</button>
-      <div class="pairing-count">Paired senders: <b id="pairedSenderCount">0</b></div>
-    </div>
-    <div class="pairing-block" style="margin-bottom:12px;">
+    <div class="pairing-block" style="margin-top:0; margin-bottom:12px;">
       <button class="small-btn" id="pairBtn">Pairing Signal</button>
       <button class="small-btn warn" id="clearPairingsBtn">Clear Triggers</button>
       <div class="pairing-count">Paired triggers: <b id="pairedCount">0</b></div>
     </div>
-    <div class="unit-note" id="devicesHint">tap Paired Devices to show the senders and triggers this device is paired with</div>
+    <div class="unit-note" id="devicesHint">tap Paired Devices to show the triggers this Lidar sends to</div>
 
     <div id="devicesPanel" style="display:none;">
-      <div class="device-group-label">Senders</div>
-      <div class="sender-list" id="senderList"></div>
-      <div class="device-group-label">Triggers</div>
-      <div class="sender-list" id="targetList"></div>
-      <div class="unit-note" style="margin-top:10px;">tap a sender or trigger to switch it on (blue) or off. Signals from senders that are off are ignored; triggers that are off are not fired. Several can be on at once (saved right away). Forget removes one device (tap twice); to use it again, pair it again. Pair Senders opens an 8 s window: switch the sender on during it. Pairing Signal makes this device pairable for 10 s: open the trigger's pairing window first. Tap Paired Devices again to close.</div>
+      <div class="sender-list" id="targetList" style="margin-top:14px;"></div>
+      <div class="unit-note" style="margin-top:10px;">tap a trigger to switch it on (blue) or off; triggers that are off are not fired. Several can be on at once (saved right away). Forget removes one trigger (tap twice); to use it again, pair it again. Pairing Signal makes this Lidar pairable for 10 s: open the trigger's pairing window first. Tap Paired Devices again to close.</div>
     </div>
   </div>
 
@@ -472,6 +427,18 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
 </div>
 
 <script>
+  // iOS (the captive "sign in" sheet and Safari) puts the cursor in the first text field when the
+  // page opens and pops up the keyboard. Typed fields stay read-only until a finger touches them,
+  // so nothing gets focused by itself; fields that are always read-only are left alone.
+  document.querySelectorAll('input[type=text], input[type=password], input[type=number]').forEach(el => {
+    if (el.readOnly) return;
+    el.readOnly = true;
+    const unlock = () => { el.readOnly = false; };
+    el.addEventListener('touchstart', unlock, { passive:true });
+    el.addEventListener('mousedown', unlock);
+  });
+  setTimeout(() => { const a = document.activeElement; if (a && a !== document.body && a.blur) a.blur(); }, 0);
+
   // Number fields show their unit ("250 ms", "5 min"). While one is being typed in it shows the
   // bare number, so editing works normally, and the unit comes back when you leave the field.
   function showMs(inp, v) { inp.value = (document.activeElement === inp) ? String(v) : (v + ' ms'); }
@@ -718,7 +685,7 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
 
   // A slider with fixed stops (left to right). Drag, tap or arrow keys pick a stop;
   // animateTo() moves the thumb smoothly like a hand would.
-  function makeSlider(id, stops, label, fmt, onPick) {
+  function makeSlider(id, stops, label, fmt, onPick, locked) {
     const root = $(id), track = root.querySelector('.sl-track'), thumb = root.querySelector('.sl-thumb');
     const fill = root.querySelector('.sl-fill'), val = root.querySelector('.sl-val'), labels = root.querySelector('.sl-labels');
     const last = stops.length - 1;
@@ -763,6 +730,7 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
     };
     let dragging = false;
     track.addEventListener('pointerdown', e => {
+      if (locked()) return;                            // a preset is active: let the page scroll
       stop(); dragging = true; track.setPointerCapture(e.pointerId); track.classList.add('grabbed'); place(posFromEvent(e));
     });
     track.addEventListener('pointermove', e => { if (dragging) place(posFromEvent(e)); });
@@ -775,6 +743,7 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
     track.addEventListener('pointerup', end);
     track.addEventListener('pointercancel', end);
     track.addEventListener('keydown', e => {
+      if (locked()) return;
       let i = idx;
       if (e.key === 'ArrowRight' || e.key === 'ArrowUp') i = Math.min(last, idx + 1);
       else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') i = Math.max(0, idx - 1);
@@ -793,13 +762,16 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
     clearTimeout(sensT);
     sensT = setTimeout(() => post({ lunaRate:cfg.lunaRate, lunaMinAmp:cfg.lunaMinAmp, filter:cfg.filter }).catch(() => {}), 250);
   }
+  // sensMode: one of the PRESETS keys, or 'custom' (only then the sliders can be moved)
+  let sensMode = 'bright';
+  const slidersLocked = () => sensMode !== 'custom';
   const slRate = makeSlider('slRate', [100, 125, 166, 250], v => v, v => v + ' <small>Hz</small>',
-    v => { cfg.lunaRate = v; slFilter.refresh(); renderPreset(); pushSensitivity(); });
+    v => { cfg.lunaRate = v; slFilter.refresh(); pushSensitivity(); }, slidersLocked);
   const slIso = makeSlider('slIso', ISO.map(x => x[1]), v => isoOf(v), v => 'ISO ' + isoOf(v),
-    v => { cfg.lunaMinAmp = v; renderPreset(); pushSensitivity(); });
+    v => { cfg.lunaMinAmp = v; pushSensitivity(); }, slidersLocked);
   const slFilter = makeSlider('slFilter', [8, 7, 6, 5, 4, 3, 2, 1], v => v,
     v => v + (v === 1 ? ' reading' : ' readings') + ' <small>' + (v * readingMs()) + ' ms</small>',
-    v => { cfg.filter = v; renderPreset(); pushSensitivity(); });
+    v => { cfg.filter = v; pushSensitivity(); }, slidersLocked);
 
   const presetBtns = document.querySelectorAll('.preset-row button');
   function matchingPreset() {
@@ -809,16 +781,20 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
     });
   }
   function renderPreset() {
-    const k = matchingPreset();
-    presetBtns.forEach(b => b.classList.toggle('active', b.dataset.preset === k));
-    $('presetNote').innerHTML = k ? PRESETS[k].note : '<b>Custom</b>: your own combination.';
+    presetBtns.forEach(b => b.classList.toggle('active', b.dataset.preset === sensMode));
+    $('sliders').classList.toggle('locked', slidersLocked());
+    $('presetNote').innerHTML = sensMode === 'custom' ? '<b>Custom</b>: set the three sliders yourself.'
+      : PRESETS[sensMode].note + ' Tap Custom to change the sliders.';
   }
   // set the sliders straight to the device's values (page load, reload)
   function renderSensitivity() {
     slRate.set(cfg.lunaRate); slIso.set(cfg.lunaMinAmp); slFilter.set(cfg.filter);
+    sensMode = matchingPreset() || 'custom';
     renderPreset();
   }
   presetBtns.forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.preset === 'custom') { sensMode = 'custom'; renderPreset(); return; }   // keeps the current values
+    sensMode = b.dataset.preset;
     const p = PRESETS[b.dataset.preset];
     cfg.lunaRate = p.rate; cfg.lunaMinAmp = p.amp; cfg.filter = p.filter;
     slRate.animateTo(p.rate); slIso.animateTo(p.amp); slFilter.animateTo(p.filter);   // all three at once
@@ -828,7 +804,7 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
   }));
 
   // ---------- live distance (one request at a time, ~8 per second) ----------
-  const liveEl = $('live'), distBig = $('distBig'), distState = $('distState'), rulerCard = $('rulerCard');
+  const tempEl = $('tempBadge'), distBig = $('distBig'), distState = $('distState'), rulerCard = $('rulerCard');
   let lastLiveOk = 0;
   function renderLive() {
     if (!live.ok) { distBig.textContent = '---'; distState.textContent = 'NO SENSOR DATA -- CHECK TF-LUNA TX -> IO27'; distState.className = 'state'; }
@@ -850,65 +826,16 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
       live = d; lastLiveOk = performance.now();
       renderBattery(d);
       if (d.m !== undefined && d.m !== cfg.mode) loadSettings();   // switched with the BOOT button
-      pairSenderBtn.classList.toggle('on-state', !!d.pw);
-      if (pairWindowWasOpen && !d.pw) { loadSettings(); if (devicesPanelOpen) loadDevices(); }   // pairing window just closed
-      pairWindowWasOpen = !!d.pw;
       renderLive();
     }).catch(() => {}).then(() => setTimeout(pollLive, 120));
   }
+  // top left: the TF-Luna's own chip temperature (runs warmer than the air)
   setInterval(() => {
+    if (updAway) return;
     const ok = performance.now() - lastLiveOk < 1500;
-    liveEl.textContent = !ok ? 'no connection' :
-      (live.ok ? `${live.rps} readings/s · signal ${live.a} · ${live.t}°C · ${live.n} sent` + (live.r ? ` · ${live.r} received` : '') : 'no TF-Luna data');
-    liveEl.className = ok && live.ok ? 'live ok' : 'live';
+    if (!ok) tempEl.textContent = 'no connection';
+    else tempEl.innerHTML = 'Lidar sensor temperature <b>' + (live.ok ? live.t + ' °C' : '--') + '</b>';
   }, 1000);
-
-  // =============================== CAMERA OUTPUT ===============================
-  const durInput = $('durValue');
-  let triggerDuration = 250;
-  let triggerDelay = 0, extraCount = 1, extraEnabled = false, extraGapValue = 50;
-  const extraGapPresets = [50, 100, 150, 250, 400];
-  const extraCountInput = $('extraCountValue'), extraGapInput = $('extraGapValue');
-  const extraToggleBtn = $('extraToggleBtn'), extraCountNote = $('extraCountNote');
-  const extraCountDownBtn = $('extraCountDown'), extraCountUpBtn = $('extraCountUp');
-  const triggerDelayInput = $('triggerDelayValue');
-  let durT = null, delayT = null, xcT = null, xgT = null;
-
-  const scheduleDur = () => { clearTimeout(durT); durT = setTimeout(() => post({ triggerDuration }), 250); };
-  const scheduleDelay = () => { clearTimeout(delayT); delayT = setTimeout(() => post({ triggerDelay }), 250); };
-  const scheduleXc = () => { clearTimeout(xcT); xcT = setTimeout(() => post({ extraCount }), 250); };
-  const scheduleXg = () => { clearTimeout(xgT); xgT = setTimeout(() => post({ extraGap:extraGapValue }), 250); };
-
-  durInput.addEventListener('input', () => { const v = parseInt(durInput.value, 10); if (!isNaN(v)) { triggerDuration = v; scheduleDur(); } });
-  durInput.addEventListener('change', () => { triggerDuration = Math.max(10, Math.min(10000, triggerDuration || 10)); showMs(durInput, triggerDuration); scheduleDur(); });
-  attachHold($('durDown'), () => { triggerDuration = Math.max(10, triggerDuration - 50); showMs(durInput, triggerDuration); scheduleDur(); });
-  attachHold($('durUp'),   () => { triggerDuration = Math.min(10000, triggerDuration + 50); showMs(durInput, triggerDuration); scheduleDur(); });
-
-  triggerDelayInput.addEventListener('input', () => { const v = parseInt(triggerDelayInput.value, 10); if (!isNaN(v) && v >= 0) { triggerDelay = v; scheduleDelay(); } });
-  attachHold($('triggerDelayDown'), () => { triggerDelay = Math.max(0, triggerDelay - 50); showMs(triggerDelayInput, triggerDelay); scheduleDelay(); });
-  attachHold($('triggerDelayUp'),   () => { triggerDelay = Math.min(10000, triggerDelay + 50); showMs(triggerDelayInput, triggerDelay); scheduleDelay(); });
-
-  extraCountInput.addEventListener('input', () => { const v = parseInt(extraCountInput.value, 10); if (!isNaN(v) && v >= 0) { extraCount = v; scheduleXc(); } });
-  attachHold(extraCountDownBtn, () => { extraCount = Math.max(0, Math.min(10, extraCount - 1)); extraCountInput.value = extraCount; scheduleXc(); });
-  attachHold(extraCountUpBtn,   () => { extraCount = Math.max(0, Math.min(10, extraCount + 1)); extraCountInput.value = extraCount; scheduleXc(); });
-
-  extraGapInput.addEventListener('input', () => { const v = parseInt(extraGapInput.value, 10); if (!isNaN(v)) { extraGapValue = v; scheduleXg(); } });
-  attachHold($('extraGapDown'), () => { extraGapValue = extraGapPresets[Math.max(0, closestIndexIn(extraGapPresets, extraGapValue) - 1)]; showMs(extraGapInput, extraGapValue); scheduleXg(); });
-  attachHold($('extraGapUp'),   () => { extraGapValue = extraGapPresets[Math.min(extraGapPresets.length - 1, closestIndexIn(extraGapPresets, extraGapValue) + 1)]; showMs(extraGapInput, extraGapValue); scheduleXg(); });
-
-  extraToggleBtn.addEventListener('click', () => {
-    extraEnabled = !extraEnabled;
-    extraToggleBtn.classList.toggle('active', extraEnabled);
-    postJson({ extraEnabled: extraEnabled ? 1 : 0 }).then(updateExtra).catch(() => {});
-  });
-
-  function updateExtra(data) {
-    extraEnabled = !!data.extraEnabled;
-    extraToggleBtn.classList.toggle('active', extraEnabled);
-    extraCount = data.extraCount;
-    extraCountInput.value = extraCount;
-    extraCountNote.textContent = 'tap Extra Triggers to switch them on (steel-blue) or off. Extra shutter releases after every trigger (arrows up to 10, type any number). Not saved: off after power-up.';
-  }
 
   // ---------- Interval / Delayed Start / Timer (nothing here is saved) ----------
   const INTERVAL_STEPS = [300, 500, 750, 1000, 1500, 2000, 2500, 3000, 4000, 5000];
@@ -1025,7 +952,7 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
     else                    { post({ startDelayMinutes:0 }); setStartDelayUI(false); }
   });
 
-  // TEST: a full signal -- this device's camera (duration / extras / delay apply) + all paired receivers
+  // TEST: one signal to every paired trigger that is on
   $('triggerBtn').addEventListener('click', () => { fetch('/api/trigger', { method:'POST' }).catch(() => {}); });
 
   // ---------- Save Settings ----------
@@ -1083,19 +1010,6 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
     }).catch(() => { ssidStatusNote.textContent = 'You were disconnected -- reconnect to the new name in your WiFi settings.'; });
   });
 
-  const pairSenderBtn = $('pairSenderBtn');
-  let pairWindowWasOpen = false;
-  pairSenderBtn.addEventListener('click', () => {
-    pairSenderBtn.classList.add('on-state');
-    fetch('/api/pair-sender', { method:'POST' }).catch(() => {});
-  });
-  armConfirm($('clearSendersBtn'), 'Clear Senders', () => {
-    fetch('/api/clear-senders', { method:'POST' }).then(() => {
-      $('pairedSenderCount').textContent = '0';
-      if (devicesPanelOpen) setTimeout(loadDevices, 300);     // the clear runs on the device's next loop
-    }).catch(() => {});
-  });
-
   const pairBtn = $('pairBtn');
   pairBtn.addEventListener('click', () => {
     fetch('/api/pair', { method:'POST' }).catch(() => {});
@@ -1109,9 +1023,9 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
     }).catch(() => {});
   });
 
-  // ---------- Paired Devices: senders, then triggers (same as the trigger / Octocam BT) ----------
+  // ---------- Paired Devices: the triggers this Lidar sends to ----------
   const devicesBtn = $('devicesToggleBtn'), devicesPanel = $('devicesPanel'), devicesHint = $('devicesHint');
-  const senderList = $('senderList'), targetList = $('targetList');
+  const targetList = $('targetList');
   let devicesPanelOpen = false, devicesPollTimer = null, deviceTapBusy = false;
   let forgetArmedKey = null, forgetArmTimer = null;   // a Forget waiting for its confirming tap
 
@@ -1196,11 +1110,8 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
   }
 
   function renderDevices(data) {
-    const senders = (data && data.senders) ? data.senders : [];
     const triggers = (data && data.triggers) ? data.triggers : [];
-    $('pairedSenderCount').textContent = senders.length;
     $('pairedCount').textContent = triggers.length;
-    renderGroup(senderList, senders, 'sender');
     renderGroup(targetList, triggers, 'trigger');
   }
 
@@ -1224,9 +1135,8 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
   // ---------- histogram ----------
   function renderHistogram(data) {
     const contacts = data.contacts, intervals = data.interval, first = data.first;
-    const received = data.received || contacts.map(() => 0);
     const totalMinutes = contacts.length;
-    const maxCount = Math.max(1, ...contacts, ...intervals, ...received);
+    const maxCount = Math.max(1, ...contacts, ...intervals);
     const scrollDiv = $('histScroll'), canvas = $('histCanvas');
     const visibleWidth = scrollDiv.clientWidth || 300;
     const pxPerMin = Math.max(1, visibleWidth / 60);
@@ -1251,7 +1161,7 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
       ctx.fillStyle = color; ctx.fillRect(i * pxPerMin, barAreaHeight - h, barW, h);
     };
     for (let i = 0; i < totalMinutes; i++) {          // tallest bar behind, shortest in front
-      [[contacts[i], '#e48fa6'], [intervals[i], '#4fd1c5'], [received[i], '#4682b4']]
+      [[contacts[i], '#e48fa6'], [intervals[i], '#4fd1c5']]
         .sort((a, b) => b[0] - a[0]).forEach(([v, col]) => drawBar(i, v, col));
     }
     const yAxis = $('histYAxis');
@@ -1345,15 +1255,10 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
     renderRange();
     cfg.mode = data.mode; cfg.moveFilter = data.moveFilter; cfg.minSpanCm = data.minSpanCm;
     renderMode(); renderRange();
-    triggerDuration = data.triggerDuration; showMs(durInput, triggerDuration);
-    triggerDelay = data.triggerDelay; showMs(triggerDelayInput, triggerDelay);
-    extraGapValue = data.extraGap; showMs(extraGapInput, extraGapValue);
-    updateExtra(data);
     applyIntervalConfig(data);
     txPowerIndex = data.txPowerIndex; powerInput.value = powerLabels[txPowerIndex];
     keepAlive = !!data.keepAlive; keepAliveBtn.classList.toggle('alive-on', keepAlive);
     $('pairedCount').textContent = data.pairedReceiverCount;
-    $('pairedSenderCount').textContent = data.pairedSenderCount;
     ssidInput.placeholder = data.ssid;
     ssidStatusNote.textContent = 'Current name: ' + data.ssid;
     refreshStatus(data);
@@ -1363,18 +1268,14 @@ const char PAGE_HTML[] PROGMEM = R"HTMLPAGE(
   function loadSettings() { fetch('/api/config').then(r => r.json()).then(applyConfig).catch(() => {}); }
   // light poll so counts stay current without overwriting fields being typed in
   function pollState() { fetch('/api/config').then(r => r.json()).then(d => {
-    updateExtra(d);
     $('pairedCount').textContent = d.pairedReceiverCount;
-    $('pairedSenderCount').textContent = d.pairedSenderCount;
+    keepAlive = !!d.keepAlive; keepAliveBtn.classList.toggle('alive-on', keepAlive);
     renderUnsaved(d.unsaved);
     renderUpdate(d);
     if (d.mode !== cfg.mode) loadSettings();
-  }).catch(() => { if (updAway) $('live').textContent = 'Lidar is away updating...'; }); }
+  }).catch(() => { if (updAway) tempEl.textContent = 'Lidar is away updating...'; }); }
 
-  attachMsField(extraGapInput, () => extraGapValue);
-  attachMsField(triggerDelayInput, () => triggerDelay);
   attachMsField(intervalInput, () => intervalMsVal);
-  attachMsField(durInput, () => triggerDuration);
   showMs(intervalInput, intervalMsVal);
   renderInterval(); setTimerUI(false); setStartDelayUI(false);
   window.addEventListener('resize', () => { rulerSize(); drawRuler(); });
